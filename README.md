@@ -28,8 +28,7 @@ If you want to contribute please take a look at the [Contributor's Guide](CONTRI
 * __Windows__: [Windows Build](https://web.archive.org/web/20240304183509/https://github.com/yuzu-emu/yuzu/wiki/Building-For-Windows)
 * __Linux__: [Linux Build](https://web.archive.org/web/20240304183515/https://github.com/yuzu-emu/yuzu/wiki/Building-For-Linux)
 * __macOS__: [macOS Build](https://web.archive.org/web/20240304183705/https://github.com/yuzu-emu/yuzu/wiki/Building-for-macOS)
-
-
-  
-
+#
+#
+#
 *: likely not "active" anymore
