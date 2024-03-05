@@ -1,6 +1,5 @@
-// Copyright 2018 yuzu Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <bitset>
 #include "common/assert.h"
@@ -10,100 +9,92 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
-#include "video_core/renderer_base.h"
 #include "video_core/textures/decoders.h"
 
 namespace Tegra::Engines {
 
-KeplerCompute::KeplerCompute(Core::System& system, VideoCore::RasterizerInterface& rasterizer,
-                             MemoryManager& memory_manager)
-    : system{system}, rasterizer{rasterizer}, memory_manager{memory_manager}, upload_state{
-                                                                                  memory_manager,
-                                                                                  regs.upload} {}
+KeplerCompute::KeplerCompute(Core::System& system_, MemoryManager& memory_manager_)
+    : system{system_}, memory_manager{memory_manager_}, upload_state{memory_manager, regs.upload} {
+    execution_mask.reset();
+    execution_mask[KEPLER_COMPUTE_REG_INDEX(exec_upload)] = true;
+    execution_mask[KEPLER_COMPUTE_REG_INDEX(data_upload)] = true;
+    execution_mask[KEPLER_COMPUTE_REG_INDEX(launch)] = true;
+}
 
 KeplerCompute::~KeplerCompute() = default;
 
-void KeplerCompute::CallMethod(const GPU::MethodCall& method_call) {
-    ASSERT_MSG(method_call.method < Regs::NUM_REGS,
+void KeplerCompute::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
+    rasterizer = rasterizer_;
+    upload_state.BindRasterizer(rasterizer);
+}
+
+void KeplerCompute::ConsumeSinkImpl() {
+    for (auto [method, value] : method_sink) {
+        regs.reg_array[method] = value;
+    }
+    method_sink.clear();
+}
+
+void KeplerCompute::CallMethod(u32 method, u32 method_argument, bool is_last_call) {
+    ASSERT_MSG(method < Regs::NUM_REGS,
                "Invalid KeplerCompute register, increase the size of the Regs structure");
 
-    regs.reg_array[method_call.method] = method_call.argument;
+    regs.reg_array[method] = method_argument;
 
-    switch (method_call.method) {
+    switch (method) {
     case KEPLER_COMPUTE_REG_INDEX(exec_upload): {
+        UploadInfo info{.upload_address = upload_address,
+                        .exec_address = upload_state.ExecTargetAddress(),
+                        .copy_size = upload_state.GetUploadSize()};
+        uploads.push_back(info);
         upload_state.ProcessExec(regs.exec_upload.linear != 0);
         break;
     }
     case KEPLER_COMPUTE_REG_INDEX(data_upload): {
-        const bool is_last_call = method_call.IsLastCall();
-        upload_state.ProcessData(method_call.argument, is_last_call);
-        if (is_last_call) {
-            system.GPU().Maxwell3D().dirty.OnMemoryWrite();
-        }
+        upload_address = current_dma_segment;
+        upload_state.ProcessData(method_argument, is_last_call);
         break;
     }
-    case KEPLER_COMPUTE_REG_INDEX(launch):
+    case KEPLER_COMPUTE_REG_INDEX(launch): {
+        const GPUVAddr launch_desc_loc = regs.launch_desc_loc.Address();
+
+        for (auto& data : uploads) {
+            const GPUVAddr offset = data.exec_address - launch_desc_loc;
+            if (offset / sizeof(u32) == LAUNCH_REG_INDEX(grid_dim_x) &&
+                memory_manager.IsMemoryDirty(data.upload_address, data.copy_size)) {
+                indirect_compute = {data.upload_address};
+            }
+        }
+        uploads.clear();
         ProcessLaunch();
+        indirect_compute = std::nullopt;
         break;
+    }
     default:
         break;
     }
 }
 
-Tegra::Texture::FullTextureInfo KeplerCompute::GetTexture(std::size_t offset) const {
-    const std::bitset<8> cbuf_mask = launch_description.const_buffer_enable_mask.Value();
-    ASSERT(cbuf_mask[regs.tex_cb_index]);
-
-    const auto& texinfo = launch_description.const_buffer_config[regs.tex_cb_index];
-    ASSERT(texinfo.Address() != 0);
-
-    const GPUVAddr address = texinfo.Address() + offset * sizeof(Texture::TextureHandle);
-    ASSERT(address < texinfo.Address() + texinfo.size);
-
-    const Texture::TextureHandle tex_handle{memory_manager.Read<u32>(address)};
-    return GetTextureInfo(tex_handle, offset);
-}
-
-Texture::FullTextureInfo KeplerCompute::GetTextureInfo(const Texture::TextureHandle tex_handle,
-                                                       std::size_t offset) const {
-    return Texture::FullTextureInfo{static_cast<u32>(offset), GetTICEntry(tex_handle.tic_id),
-                                    GetTSCEntry(tex_handle.tsc_id)};
-}
-
-u32 KeplerCompute::AccessConstBuffer32(ShaderType stage, u64 const_buffer, u64 offset) const {
-    ASSERT(stage == ShaderType::Compute);
-    const auto& buffer = launch_description.const_buffer_config[const_buffer];
-    u32 result;
-    std::memcpy(&result, memory_manager.GetPointer(buffer.Address() + offset), sizeof(u32));
-    return result;
-}
-
-SamplerDescriptor KeplerCompute::AccessBoundSampler(ShaderType stage, u64 offset) const {
-    return AccessBindlessSampler(stage, regs.tex_cb_index, offset * sizeof(Texture::TextureHandle));
-}
-
-SamplerDescriptor KeplerCompute::AccessBindlessSampler(ShaderType stage, u64 const_buffer,
-                                                       u64 offset) const {
-    ASSERT(stage == ShaderType::Compute);
-    const auto& tex_info_buffer = launch_description.const_buffer_config[const_buffer];
-    const GPUVAddr tex_info_address = tex_info_buffer.Address() + offset;
-
-    const Texture::TextureHandle tex_handle{memory_manager.Read<u32>(tex_info_address)};
-    const Texture::FullTextureInfo tex_info = GetTextureInfo(tex_handle, offset);
-    SamplerDescriptor result = SamplerDescriptor::FromTicTexture(tex_info.tic.texture_type.Value());
-    result.is_shadow.Assign(tex_info.tsc.depth_compare_enabled.Value());
-    return result;
+void KeplerCompute::CallMultiMethod(u32 method, const u32* base_start, u32 amount,
+                                    u32 methods_pending) {
+    switch (method) {
+    case KEPLER_COMPUTE_REG_INDEX(data_upload):
+        upload_address = current_dma_segment;
+        upload_state.ProcessData(base_start, amount);
+        return;
+    default:
+        for (u32 i = 0; i < amount; i++) {
+            CallMethod(method, base_start[i], methods_pending - i <= 1);
+        }
+        break;
+    }
 }
 
 void KeplerCompute::ProcessLaunch() {
     const GPUVAddr launch_desc_loc = regs.launch_desc_loc.Address();
     memory_manager.ReadBlockUnsafe(launch_desc_loc, &launch_description,
                                    LaunchParams::NUM_LAUNCH_PARAMETERS * sizeof(u32));
-
-    const GPUVAddr code_addr = regs.code_loc.Address() + launch_description.program_start;
-    LOG_TRACE(HW_GPU, "Compute invocation launched at address 0x{:016x}", code_addr);
-
-    rasterizer.DispatchCompute(code_addr);
+    rasterizer->DispatchCompute();
 }
 
 Texture::TICEntry KeplerCompute::GetTICEntry(u32 tic_index) const {
@@ -111,15 +102,6 @@ Texture::TICEntry KeplerCompute::GetTICEntry(u32 tic_index) const {
 
     Texture::TICEntry tic_entry;
     memory_manager.ReadBlockUnsafe(tic_address_gpu, &tic_entry, sizeof(Texture::TICEntry));
-
-    const auto r_type{tic_entry.r_type.Value()};
-    const auto g_type{tic_entry.g_type.Value()};
-    const auto b_type{tic_entry.b_type.Value()};
-    const auto a_type{tic_entry.a_type.Value()};
-
-    // TODO(Subv): Different data types for separate components are not supported
-    DEBUG_ASSERT(r_type == g_type && r_type == b_type && r_type == a_type);
-
     return tic_entry;
 }
 

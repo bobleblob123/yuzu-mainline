@@ -1,20 +1,43 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
-namespace Service::SM {
-class ServiceManager;
-}
+#include "core/hle/service/service.h"
 
 namespace Core {
 class System;
 }
 
+namespace Network {
+class RoomNetwork;
+}
+
 namespace Service::NIFM {
 
-/// Registers all NIFM services with the specified service manager.
-void InstallInterfaces(SM::ServiceManager& service_manager, Core::System& system);
+void LoopProcess(Core::System& system);
+
+class IGeneralService final : public ServiceFramework<IGeneralService> {
+public:
+    explicit IGeneralService(Core::System& system_);
+    ~IGeneralService() override;
+
+private:
+    void GetClientId(HLERequestContext& ctx);
+    void CreateScanRequest(HLERequestContext& ctx);
+    void CreateRequest(HLERequestContext& ctx);
+    void GetCurrentNetworkProfile(HLERequestContext& ctx);
+    void RemoveNetworkProfile(HLERequestContext& ctx);
+    void GetCurrentIpAddress(HLERequestContext& ctx);
+    void CreateTemporaryNetworkProfile(HLERequestContext& ctx);
+    void GetCurrentIpConfigInfo(HLERequestContext& ctx);
+    void IsWirelessCommunicationEnabled(HLERequestContext& ctx);
+    void GetInternetConnectionStatus(HLERequestContext& ctx);
+    void IsEthernetCommunicationEnabled(HLERequestContext& ctx);
+    void IsAnyInternetRequestAccepted(HLERequestContext& ctx);
+    void IsAnyForegroundRequestAccepted(HLERequestContext& ctx);
+
+    Network::RoomNetwork& network;
+};
 
 } // namespace Service::NIFM

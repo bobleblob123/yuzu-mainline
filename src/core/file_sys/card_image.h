@@ -1,6 +1,5 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
@@ -9,8 +8,11 @@
 #include <vector>
 #include "common/common_types.h"
 #include "common/swap.h"
-#include "core/crypto/key_manager.h"
-#include "core/file_sys/vfs.h"
+#include "core/file_sys/vfs/vfs.h"
+
+namespace Core::Crypto {
+class KeyManager;
+}
 
 namespace Loader {
 enum class ResultStatus : u16;
@@ -75,7 +77,7 @@ enum class XCIPartition : u8 { Update, Normal, Secure, Logo };
 
 class XCI : public ReadOnlyVfsDirectory {
 public:
-    explicit XCI(VirtualFile file);
+    explicit XCI(VirtualFile file, u64 program_id = 0, size_t program_index = 0);
     ~XCI() override;
 
     Loader::ResultStatus GetStatus() const;
@@ -101,6 +103,7 @@ public:
     VirtualFile GetLogoPartitionRaw() const;
 
     u64 GetProgramTitleID() const;
+    std::vector<u64> GetProgramTitleIDs() const;
     u32 GetSystemUpdateVersion();
     u64 GetSystemUpdateTitleID() const;
 
@@ -125,6 +128,7 @@ public:
 
 private:
     Loader::ResultStatus AddNCAFromPartition(XCIPartition part);
+    Loader::ResultStatus TryReadHeader();
 
     VirtualFile file;
     GamecardHeader header{};
@@ -140,6 +144,6 @@ private:
 
     u64 update_normal_partition_end;
 
-    Core::Crypto::KeyManager keys;
+    Core::Crypto::KeyManager& keys;
 };
 } // namespace FileSys

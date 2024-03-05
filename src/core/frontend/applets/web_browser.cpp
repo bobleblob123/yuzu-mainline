@@ -1,6 +1,5 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/logging/log.h"
 #include "core/frontend/applets/web_browser.h"
@@ -11,14 +10,23 @@ WebBrowserApplet::~WebBrowserApplet() = default;
 
 DefaultWebBrowserApplet::~DefaultWebBrowserApplet() = default;
 
-void DefaultWebBrowserApplet::OpenPageLocal(std::string_view filename,
-                                            std::function<void()> unpack_romfs_callback,
-                                            std::function<void()> finished_callback) {
-    LOG_INFO(Service_AM,
-             "(STUBBED) called - No suitable web browser implementation found to open website page "
-             "at '{}'!",
-             filename);
-    finished_callback();
+void DefaultWebBrowserApplet::Close() const {}
+
+void DefaultWebBrowserApplet::OpenLocalWebPage(const std::string& local_url,
+                                               ExtractROMFSCallback extract_romfs_callback,
+                                               OpenWebPageCallback callback) const {
+    LOG_WARNING(Service_AM, "(STUBBED) called, backend requested to open local web page at {}",
+                local_url);
+
+    callback(Service::AM::Frontend::WebExitReason::WindowClosed, "http://localhost/");
+}
+
+void DefaultWebBrowserApplet::OpenExternalWebPage(const std::string& external_url,
+                                                  OpenWebPageCallback callback) const {
+    LOG_WARNING(Service_AM, "(STUBBED) called, backend requested to open external web page at {}",
+                external_url);
+
+    callback(Service::AM::Frontend::WebExitReason::WindowClosed, "http://localhost/");
 }
 
 } // namespace Core::Frontend

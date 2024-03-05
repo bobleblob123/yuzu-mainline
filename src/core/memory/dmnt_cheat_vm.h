@@ -1,26 +1,5 @@
-/*
- * Copyright (c) 2018-2019 Atmosphère-NX
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-
-/*
- * Adapted by DarkLordZach for use/interaction with yuzu
- *
- * Modifications Copyright 2019 yuzu emulator team
- * Licensed under GPLv2 or any later version
- * Refer to the license.txt file included.
- */
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
@@ -30,7 +9,7 @@
 #include "common/common_types.h"
 #include "core/memory/dmnt_cheat_types.h"
 
-namespace Memory {
+namespace Core::Memory {
 
 enum class CheatVmOpcodeType : u32 {
     StoreStatic = 0,
@@ -56,18 +35,23 @@ enum class CheatVmOpcodeType : u32 {
     BeginRegisterConditionalBlock = 0xC0,
     SaveRestoreRegister = 0xC1,
     SaveRestoreRegisterMask = 0xC2,
+    ReadWriteStaticRegister = 0xC3,
 
     // This is a meta entry, and not a real opcode.
     // This is to facilitate multi-nybble instruction decoding.
     DoubleExtendedWidth = 0xF0,
 
     // Double-extended width opcodes.
+    PauseProcess = 0xFF0,
+    ResumeProcess = 0xFF1,
     DebugLog = 0xFFF,
 };
 
 enum class MemoryAccessType : u32 {
     MainNso = 0,
     Heap = 1,
+    Alias = 2,
+    Aslr = 3,
 };
 
 enum class ConditionalComparisonType : u32 {
@@ -151,7 +135,9 @@ struct BeginConditionalOpcode {
     VmInt value{};
 };
 
-struct EndConditionalOpcode {};
+struct EndConditionalOpcode {
+    bool is_else;
+};
 
 struct ControlLoopOpcode {
     bool start_loop{};
@@ -237,6 +223,15 @@ struct SaveRestoreRegisterMaskOpcode {
     std::array<bool, 0x10> should_operate{};
 };
 
+struct ReadWriteStaticRegisterOpcode {
+    u32 static_idx{};
+    u32 idx{};
+};
+
+struct PauseProcessOpcode {};
+
+struct ResumeProcessOpcode {};
+
 struct DebugLogOpcode {
     u32 bit_width{};
     u32 log_id{};
@@ -259,7 +254,8 @@ struct CheatVmOpcode {
                  PerformArithmeticStaticOpcode, BeginKeypressConditionalOpcode,
                  PerformArithmeticRegisterOpcode, StoreRegisterToAddressOpcode,
                  BeginRegisterConditionalOpcode, SaveRestoreRegisterOpcode,
-                 SaveRestoreRegisterMaskOpcode, DebugLogOpcode, UnrecognizedInstruction>
+                 SaveRestoreRegisterMaskOpcode, ReadWriteStaticRegisterOpcode, PauseProcessOpcode,
+                 ResumeProcessOpcode, DebugLogOpcode, UnrecognizedInstruction>
         opcode{};
 };
 
@@ -270,10 +266,13 @@ public:
     public:
         virtual ~Callbacks();
 
-        virtual void MemoryRead(VAddr address, void* data, u64 size) = 0;
-        virtual void MemoryWrite(VAddr address, const void* data, u64 size) = 0;
+        virtual void MemoryReadUnsafe(VAddr address, void* data, u64 size) = 0;
+        virtual void MemoryWriteUnsafe(VAddr address, const void* data, u64 size) = 0;
 
         virtual u64 HidKeysDown() = 0;
+
+        virtual void PauseProcess() = 0;
+        virtual void ResumeProcess() = 0;
 
         virtual void DebugLog(u8 id, u64 value) = 0;
         virtual void CommandLog(std::string_view data) = 0;
@@ -281,8 +280,12 @@ public:
 
     static constexpr std::size_t MaximumProgramOpcodeCount = 0x400;
     static constexpr std::size_t NumRegisters = 0x10;
+    static constexpr std::size_t NumReadableStaticRegisters = 0x80;
+    static constexpr std::size_t NumWritableStaticRegisters = 0x80;
+    static constexpr std::size_t NumStaticRegisters =
+        NumReadableStaticRegisters + NumWritableStaticRegisters;
 
-    explicit DmntCheatVm(std::unique_ptr<Callbacks> callbacks);
+    explicit DmntCheatVm(std::unique_ptr<Callbacks> callbacks_);
     ~DmntCheatVm();
 
     std::size_t GetProgramSize() const {
@@ -302,10 +305,11 @@ private:
     std::array<u32, MaximumProgramOpcodeCount> program{};
     std::array<u64, NumRegisters> registers{};
     std::array<u64, NumRegisters> saved_values{};
+    std::array<u64, NumStaticRegisters> static_registers{};
     std::array<std::size_t, NumRegisters> loop_tops{};
 
     bool DecodeNextOpcode(CheatVmOpcode& out);
-    void SkipConditionalBlock();
+    void SkipConditionalBlock(bool is_if);
     void ResetState();
 
     // For implementing the DebugLog opcode.
@@ -318,4 +322,4 @@ private:
                                       MemoryAccessType mem_type, u64 rel_address);
 };
 
-}; // namespace Memory
+}; // namespace Core::Memory

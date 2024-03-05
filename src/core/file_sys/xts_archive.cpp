@@ -1,22 +1,23 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
 #include <array>
 #include <cstring>
 #include <regex>
 #include <string>
+
 #include <mbedtls/md.h>
 #include <mbedtls/sha256.h>
-#include "common/assert.h"
-#include "common/file_util.h"
+
+#include "common/fs/path_util.h"
 #include "common/hex_util.h"
-#include "common/logging/log.h"
+#include "common/string_util.h"
 #include "core/crypto/aes_util.h"
+#include "core/crypto/key_manager.h"
 #include "core/crypto/xts_encryption_layer.h"
-#include "core/file_sys/partition_filesystem.h"
-#include "core/file_sys/vfs_offset.h"
+#include "core/file_sys/content_archive.h"
+#include "core/file_sys/vfs/vfs_offset.h"
 #include "core/file_sys/xts_archive.h"
 #include "core/loader/loader.h"
 
@@ -42,8 +43,10 @@ static bool CalculateHMAC256(Destination* out, const SourceKey* key, std::size_t
     return true;
 }
 
-NAX::NAX(VirtualFile file_) : header(std::make_unique<NAXHeader>()), file(std::move(file_)) {
-    std::string path = FileUtil::SanitizePath(file->GetFullPath());
+NAX::NAX(VirtualFile file_)
+    : header(std::make_unique<NAXHeader>()),
+      file(std::move(file_)), keys{Core::Crypto::KeyManager::Instance()} {
+    std::string path = Common::FS::SanitizePath(file->GetFullPath());
     static const std::regex nax_path_regex("/registered/(000000[0-9A-F]{2})/([0-9A-F]{32})\\.nca",
                                            std::regex_constants::ECMAScript |
                                                std::regex_constants::icase);
@@ -53,18 +56,16 @@ NAX::NAX(VirtualFile file_) : header(std::make_unique<NAXHeader>()), file(std::m
         return;
     }
 
-    std::string two_dir = match[1];
-    std::string nca_id = match[2];
-    std::transform(two_dir.begin(), two_dir.end(), two_dir.begin(), ::toupper);
-    std::transform(nca_id.begin(), nca_id.end(), nca_id.begin(), ::tolower);
-
+    const std::string two_dir = Common::ToUpper(match[1]);
+    const std::string nca_id = Common::ToLower(match[2]);
     status = Parse(fmt::format("/registered/{}/{}.nca", two_dir, nca_id));
 }
 
 NAX::NAX(VirtualFile file_, std::array<u8, 0x10> nca_id)
-    : header(std::make_unique<NAXHeader>()), file(std::move(file_)) {
+    : header(std::make_unique<NAXHeader>()),
+      file(std::move(file_)), keys{Core::Crypto::KeyManager::Instance()} {
     Core::Crypto::SHA256Hash hash{};
-    mbedtls_sha256(nca_id.data(), nca_id.size(), hash.data(), 0);
+    mbedtls_sha256_ret(nca_id.data(), nca_id.size(), hash.data(), 0);
     status = Parse(fmt::format("/registered/000000{:02X}/{}.nca", hash[0],
                                Common::HexToString(nca_id, false)));
 }
@@ -72,14 +73,18 @@ NAX::NAX(VirtualFile file_, std::array<u8, 0x10> nca_id)
 NAX::~NAX() = default;
 
 Loader::ResultStatus NAX::Parse(std::string_view path) {
-    if (file->ReadObject(header.get()) != sizeof(NAXHeader))
+    if (file == nullptr) {
+        return Loader::ResultStatus::ErrorNullFile;
+    }
+    if (file->ReadObject(header.get()) != sizeof(NAXHeader)) {
         return Loader::ResultStatus::ErrorBadNAXHeader;
-
-    if (header->magic != Common::MakeMagic('N', 'A', 'X', '0'))
+    }
+    if (header->magic != Common::MakeMagic('N', 'A', 'X', '0')) {
         return Loader::ResultStatus::ErrorBadNAXHeader;
-
-    if (file->GetSize() < NAX_HEADER_PADDING_SIZE + header->file_size)
+    }
+    if (file->GetSize() < NAX_HEADER_PADDING_SIZE + header->file_size) {
         return Loader::ResultStatus::ErrorIncorrectNAXFileSize;
+    }
 
     keys.DeriveSDSeedLazy();
     std::array<Core::Crypto::Key256, 2> sd_keys{};
@@ -93,8 +98,7 @@ Loader::ResultStatus NAX::Parse(std::string_view path) {
     std::size_t i = 0;
     for (; i < sd_keys.size(); ++i) {
         std::array<Core::Crypto::Key128, 2> nax_keys{};
-        if (!CalculateHMAC256(nax_keys.data(), sd_keys[i].data(), 0x10, std::string(path).c_str(),
-                              path.size())) {
+        if (!CalculateHMAC256(nax_keys.data(), sd_keys[i].data(), 0x10, path.data(), path.size())) {
             return Loader::ResultStatus::ErrorNAXKeyHMACFailed;
         }
 
@@ -147,11 +151,11 @@ NAXContentType NAX::GetContentType() const {
     return type;
 }
 
-std::vector<std::shared_ptr<VfsFile>> NAX::GetFiles() const {
+std::vector<VirtualFile> NAX::GetFiles() const {
     return {dec_file};
 }
 
-std::vector<std::shared_ptr<VfsDirectory>> NAX::GetSubdirectories() const {
+std::vector<VirtualDir> NAX::GetSubdirectories() const {
     return {};
 }
 
@@ -159,7 +163,7 @@ std::string NAX::GetName() const {
     return file->GetName();
 }
 
-std::shared_ptr<VfsDirectory> NAX::GetParentDirectory() const {
+VirtualDir NAX::GetParentDirectory() const {
     return file->GetContainingDirectory();
 }
 

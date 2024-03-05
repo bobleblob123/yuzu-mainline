@@ -1,10 +1,11 @@
-// Copyright 2019 yuzu Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -14,6 +15,10 @@ namespace Core::Timing {
 class CoreTiming;
 struct EventType;
 } // namespace Core::Timing
+
+namespace Core::Memory {
+class Memory;
+}
 
 namespace Tools {
 
@@ -33,11 +38,11 @@ public:
         u64 value;
     };
 
-    explicit Freezer(Core::Timing::CoreTiming& core_timing);
+    explicit Freezer(Core::Timing::CoreTiming& core_timing_, Core::Memory::Memory& memory_);
     ~Freezer();
 
     // Enables or disables the entire memory freezer.
-    void SetActive(bool active);
+    void SetActive(bool is_active);
 
     // Returns whether or not the freezer is active.
     bool IsActive() const;
@@ -67,16 +72,22 @@ public:
     std::vector<Entry> GetEntries() const;
 
 private:
-    void FrameCallback(u64 userdata, s64 cycles_late);
+    using Entries = std::vector<Entry>;
+
+    Entries::iterator FindEntry(VAddr address);
+    Entries::const_iterator FindEntry(VAddr address) const;
+
+    void FrameCallback(std::chrono::nanoseconds ns_late);
     void FillEntryReads();
 
     std::atomic_bool active{false};
 
     mutable std::mutex entries_mutex;
-    std::vector<Entry> entries;
+    Entries entries;
 
-    Core::Timing::EventType* event;
+    std::shared_ptr<Core::Timing::EventType> event;
     Core::Timing::CoreTiming& core_timing;
+    Core::Memory::Memory& memory;
 };
 
 } // namespace Tools

@@ -1,10 +1,10 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
-#include "core/hle/service/glue/manager.h"
+#include "common/uuid.h"
+#include "core/hle/service/glue/glue_manager.h"
 #include "core/hle/service/service.h"
 
 namespace Service::Account {
@@ -15,27 +15,37 @@ class Module final {
 public:
     class Interface : public ServiceFramework<Interface> {
     public:
-        explicit Interface(std::shared_ptr<Module> module,
-                           std::shared_ptr<ProfileManager> profile_manager, Core::System& system,
+        explicit Interface(std::shared_ptr<Module> module_,
+                           std::shared_ptr<ProfileManager> profile_manager_, Core::System& system_,
                            const char* name);
         ~Interface() override;
 
-        void GetUserCount(Kernel::HLERequestContext& ctx);
-        void GetUserExistence(Kernel::HLERequestContext& ctx);
-        void ListAllUsers(Kernel::HLERequestContext& ctx);
-        void ListOpenUsers(Kernel::HLERequestContext& ctx);
-        void GetLastOpenedUser(Kernel::HLERequestContext& ctx);
-        void GetProfile(Kernel::HLERequestContext& ctx);
-        void InitializeApplicationInfo(Kernel::HLERequestContext& ctx);
-        void InitializeApplicationInfoRestricted(Kernel::HLERequestContext& ctx);
-        void GetBaasAccountManagerForApplication(Kernel::HLERequestContext& ctx);
-        void IsUserRegistrationRequestPermitted(Kernel::HLERequestContext& ctx);
-        void TrySelectUserWithoutInteraction(Kernel::HLERequestContext& ctx);
-        void IsUserAccountSwitchLocked(Kernel::HLERequestContext& ctx);
-        void GetProfileEditor(Kernel::HLERequestContext& ctx);
+        void GetUserCount(HLERequestContext& ctx);
+        void GetUserExistence(HLERequestContext& ctx);
+        void ListAllUsers(HLERequestContext& ctx);
+        void ListOpenUsers(HLERequestContext& ctx);
+        void GetLastOpenedUser(HLERequestContext& ctx);
+        void GetProfile(HLERequestContext& ctx);
+        void InitializeApplicationInfo(HLERequestContext& ctx);
+        void InitializeApplicationInfoRestricted(HLERequestContext& ctx);
+        void GetBaasAccountManagerForApplication(HLERequestContext& ctx);
+        void IsUserRegistrationRequestPermitted(HLERequestContext& ctx);
+        void TrySelectUserWithoutInteraction(HLERequestContext& ctx);
+        void IsUserAccountSwitchLocked(HLERequestContext& ctx);
+        void InitializeApplicationInfoV2(HLERequestContext& ctx);
+        void BeginUserRegistration(HLERequestContext& ctx);
+        void CompleteUserRegistration(HLERequestContext& ctx);
+        void GetProfileEditor(HLERequestContext& ctx);
+        void ListQualifiedUsers(HLERequestContext& ctx);
+        void ListOpenContextStoredUsers(HLERequestContext& ctx);
+        void StoreSaveDataThumbnailApplication(HLERequestContext& ctx);
+        void GetBaasAccountManagerForSystemService(HLERequestContext& ctx);
+        void StoreSaveDataThumbnailSystem(HLERequestContext& ctx);
 
     private:
-        ResultCode InitializeApplicationInfoBase(u64 process_id);
+        Result InitializeApplicationInfoBase();
+        void StoreSaveDataThumbnail(HLERequestContext& ctx, const Common::UUID& uuid,
+                                    const u64 tid);
 
         enum class ApplicationType : u32_le {
             GameCard = 0,
@@ -57,11 +67,9 @@ public:
     protected:
         std::shared_ptr<Module> module;
         std::shared_ptr<ProfileManager> profile_manager;
-        Core::System& system;
     };
 };
 
-/// Registers all ACC services with the specified service manager.
-void InstallInterfaces(Core::System& system);
+void LoopProcess(Core::System& system);
 
 } // namespace Service::Account

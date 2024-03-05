@@ -1,16 +1,14 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <array>
-#include <memory>
 #include <vector>
 #include "common/common_funcs.h"
 #include "common/common_types.h"
 #include "common/swap.h"
-#include "core/file_sys/vfs.h"
+#include "core/file_sys/vfs/vfs_types.h"
 
 namespace FileSys {
 class CNMT;
@@ -87,10 +85,11 @@ static_assert(sizeof(CNMTHeader) == 0x20, "CNMTHeader has incorrect size.");
 class CNMT {
 public:
     explicit CNMT(VirtualFile file);
-    CNMT(CNMTHeader header, OptionalHeader opt_header, std::vector<ContentRecord> content_records,
-         std::vector<MetaRecord> meta_records);
+    CNMT(CNMTHeader header_, OptionalHeader opt_header_,
+         std::vector<ContentRecord> content_records_, std::vector<MetaRecord> meta_records_);
     ~CNMT();
 
+    const CNMTHeader& GetHeader() const;
     u64 GetTitleID() const;
     u32 GetTitleVersion() const;
     TitleType GetType() const;

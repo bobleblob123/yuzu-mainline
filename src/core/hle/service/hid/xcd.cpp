@@ -1,12 +1,11 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "core/hle/service/hid/xcd.h"
 
 namespace Service::HID {
 
-XCD_SYS::XCD_SYS() : ServiceFramework{"xcd:sys"} {
+XCD_SYS::XCD_SYS(Core::System& system_) : ServiceFramework{system_, "xcd:sys"} {
     // clang-format off
     static const FunctionInfo functions[] = {
         {0, nullptr, "GetDataFormat"},
@@ -28,6 +27,8 @@ XCD_SYS::XCD_SYS() : ServiceFramework{"xcd:sys"} {
         {20, nullptr, "StartMifareWrite"},
         {101, nullptr, "GetAwakeTriggerReasonForLeftRail"},
         {102, nullptr, "GetAwakeTriggerReasonForRightRail"},
+        {103, nullptr, "GetAwakeTriggerBatteryLevelTransitionForLeftRail"},
+        {104, nullptr, "GetAwakeTriggerBatteryLevelTransitionForRightRail"},
     };
     // clang-format on
 

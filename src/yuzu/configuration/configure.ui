@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>382</width>
+    <width>650</width>
     <height>650</height>
    </rect>
   </property>
@@ -26,13 +26,13 @@
       <widget class="QListWidget" name="selectorList">
        <property name="minimumSize">
         <size>
-         <width>150</width>
+         <width>120</width>
          <height>0</height>
         </size>
        </property>
        <property name="maximumSize">
         <size>
-         <width>150</width>
+         <width>120</width>
          <height>16777215</height>
         </size>
        </property>
@@ -41,155 +41,44 @@
      <item>
       <widget class="QTabWidget" name="tabWidget">
        <property name="currentIndex">
-        <number>0</number>
+        <number>-1</number>
        </property>
-       <widget class="ConfigureGeneral" name="generalTab">
-        <attribute name="title">
-         <string>General</string>
-        </attribute>
-       </widget>
-       <widget class="ConfigureGameList" name="gameListTab">
-        <attribute name="title">
-         <string>Game List</string>
-        </attribute>
-       </widget>
-       <widget class="ConfigureSystem" name="systemTab">
-        <attribute name="title">
-         <string>System</string>
-        </attribute>
-       </widget>
-       <widget class="ConfigureProfileManager" name="profileManagerTab">
-        <attribute name="title">
-         <string>Profiles</string>
-        </attribute>
-       </widget>
-       <widget class="ConfigureFilesystem" name="filesystemTab">
-        <attribute name="title">
-         <string>Filesystem</string>
-        </attribute>
-       </widget>
-       <widget class="ConfigureInputSimple" name="inputTab">
-        <attribute name="title">
-         <string>Input</string>
-        </attribute>
-       </widget>
-       <widget class="ConfigureHotkeys" name="hotkeysTab">
-        <attribute name="title">
-         <string>Hotkeys</string>
-        </attribute>
-       </widget>
-       <widget class="ConfigureGraphics" name="graphicsTab">
-        <attribute name="title">
-         <string>Graphics</string>
-        </attribute>
-       </widget>
-       <widget class="ConfigureAudio" name="audioTab">
-        <attribute name="title">
-         <string>Audio</string>
-        </attribute>
-       </widget>
-       <widget class="ConfigureDebug" name="debugTab">
-        <attribute name="title">
-         <string>Debug</string>
-        </attribute>
-       </widget>
-       <widget class="ConfigureWeb" name="webTab">
-        <attribute name="title">
-         <string>Web</string>
-        </attribute>
-       </widget>
-       <widget class="ConfigureService" name="serviceTab">
-        <attribute name="title">
-         <string>Services</string>
-        </attribute>
-       </widget>
       </widget>
      </item>
     </layout>
    </item>
    <item>
-    <widget class="QDialogButtonBox" name="buttonBox">
-     <property name="standardButtons">
-      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+    <layout class="QHBoxLayout" name="horizontalLayout_2">
+     <property name="leftMargin">
+      <number>0</number>
      </property>
-    </widget>
+     <property name="topMargin">
+      <number>0</number>
+     </property>
+     <property name="rightMargin">
+      <number>0</number>
+     </property>
+     <property name="bottomMargin">
+      <number>0</number>
+     </property>
+     <item>
+      <widget class="QLabel" name="label">
+       <property name="text">
+        <string>Some settings are only available when a game is not running.</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QDialogButtonBox" name="buttonBox">
+       <property name="standardButtons">
+        <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+       </property>
+      </widget>
+     </item>
+    </layout>
    </item>
   </layout>
  </widget>
- <customwidgets>
-  <customwidget>
-   <class>ConfigureGeneral</class>
-   <extends>QWidget</extends>
-   <header>configuration/configure_general.h</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
-   <class>ConfigureSystem</class>
-   <extends>QWidget</extends>
-   <header>configuration/configure_system.h</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
-   <class>ConfigureProfileManager</class>
-   <extends>QWidget</extends>
-   <header>configuration/configure_profile_manager.h</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
-   <class>ConfigureFilesystem</class>
-   <extends>QWidget</extends>
-   <header>configuration/configure_filesystem.h</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
-   <class>ConfigureAudio</class>
-   <extends>QWidget</extends>
-   <header>configuration/configure_audio.h</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
-   <class>ConfigureDebug</class>
-   <extends>QWidget</extends>
-   <header>configuration/configure_debug.h</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
-   <class>ConfigureGraphics</class>
-   <extends>QWidget</extends>
-   <header>configuration/configure_graphics.h</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
-   <class>ConfigureWeb</class>
-   <extends>QWidget</extends>
-   <header>configuration/configure_web.h</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
-   <class>ConfigureGameList</class>
-   <extends>QWidget</extends>
-   <header>configuration/configure_gamelist.h</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
-   <class>ConfigureInputSimple</class>
-   <extends>QWidget</extends>
-   <header>configuration/configure_input_simple.h</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
-   <class>ConfigureHotkeys</class>
-   <extends>QWidget</extends>
-   <header>configuration/configure_hotkeys.h</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
-   <class>ConfigureService</class>
-   <extends>QWidget</extends>
-   <header>configuration/configure_service.h</header>
-   <container>1</container>
-  </customwidget>
- </customwidgets>
  <resources/>
  <connections>
   <connection>
@@ -199,12 +88,12 @@
    <slot>accept()</slot>
    <hints>
     <hint type="sourcelabel">
-     <x>220</x>
-     <y>380</y>
+     <x>20</x>
+     <y>20</y>
     </hint>
     <hint type="destinationlabel">
-     <x>220</x>
-     <y>200</y>
+     <x>20</x>
+     <y>20</y>
     </hint>
    </hints>
   </connection>
@@ -215,12 +104,12 @@
    <slot>reject()</slot>
    <hints>
     <hint type="sourcelabel">
-     <x>220</x>
-     <y>380</y>
+     <x>20</x>
+     <y>20</y>
     </hint>
     <hint type="destinationlabel">
-     <x>220</x>
-     <y>200</y>
+     <x>20</x>
+     <y>20</y>
     </hint>
    </hints>
   </connection>

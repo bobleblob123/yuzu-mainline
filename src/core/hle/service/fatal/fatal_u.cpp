@@ -1,13 +1,12 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "core/hle/service/fatal/fatal_u.h"
 
 namespace Service::Fatal {
 
-Fatal_U::Fatal_U(std::shared_ptr<Module> module, Core::System& system)
-    : Module::Interface(std::move(module), system, "fatal:u") {
+Fatal_U::Fatal_U(std::shared_ptr<Module> module_, Core::System& system_)
+    : Interface(std::move(module_), system_, "fatal:u") {
     static const FunctionInfo functions[] = {
         {0, &Fatal_U::ThrowFatal, "ThrowFatal"},
         {1, &Fatal_U::ThrowFatalWithPolicy, "ThrowFatalWithPolicy"},

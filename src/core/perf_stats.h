@@ -1,10 +1,10 @@
-// Copyright 2017 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2017 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <mutex>
@@ -15,8 +15,8 @@ namespace Core {
 struct PerfStatsResults {
     /// System FPS (LCD VBlanks) in Hz
     double system_fps;
-    /// Game FPS (GSP frame submissions) in Hz
-    double game_fps;
+    /// Average game FPS (GPU frame renders) in Hz
+    double average_game_fps;
     /// Walltime per system frame, in seconds, excluding any waits
     double frametime;
     /// Ratio of walltime / emulated time elapsed
@@ -29,11 +29,10 @@ struct PerfStatsResults {
  */
 class PerfStats {
 public:
-    explicit PerfStats(u64 title_id);
-
+    explicit PerfStats(u64 title_id_);
     ~PerfStats();
 
-    using Clock = std::chrono::high_resolution_clock;
+    using Clock = std::chrono::steady_clock;
 
     void BeginSystemFrame();
     void EndSystemFrame();
@@ -42,18 +41,18 @@ public:
     PerfStatsResults GetAndResetStats(std::chrono::microseconds current_system_time_us);
 
     /**
-     * Returns the Arthimetic Mean of all frametime values stored in the performance history.
+     * Returns the arithmetic mean of all frametime values stored in the performance history.
      */
-    double GetMeanFrametime();
+    double GetMeanFrametime() const;
 
     /**
      * Gets the ratio between walltime and the emulated time of the previous system frame. This is
      * useful for scaling inputs or outputs moving between the two time domains.
      */
-    double GetLastFrameTimeScale();
+    double GetLastFrameTimeScale() const;
 
 private:
-    std::mutex object_mutex{};
+    mutable std::mutex object_mutex;
 
     /// Title ID for the game that is running. 0 if there is no game running yet
     u64 title_id{0};
@@ -61,7 +60,7 @@ private:
     std::size_t current_index{0};
     /// Stores an hour of historical frametime data useful for processing and tracking performance
     /// regressions with code changes.
-    std::array<double, 216000> perf_history = {};
+    std::array<double, 216000> perf_history{};
 
     /// Point when the cumulative counters were reset
     Clock::time_point reset_point = Clock::now();
@@ -73,7 +72,7 @@ private:
     /// Cumulative number of system frames (LCD VBlanks) presented since last reset
     u32 system_frames = 0;
     /// Cumulative number of game frames (GSP frame submissions) since last reset
-    u32 game_frames = 0;
+    std::atomic<u32> game_frames = 0;
 
     /// Point when the previous system frame ended
     Clock::time_point previous_frame_end = reset_point;
@@ -81,13 +80,15 @@ private:
     Clock::time_point frame_begin = reset_point;
     /// Total visible duration (including frame-limiting, etc.) of the previous system frame
     Clock::duration previous_frame_length = Clock::duration::zero();
+    /// Previously computed fps
+    double previous_fps = 0;
 };
 
-class FrameLimiter {
+class SpeedLimiter {
 public:
-    using Clock = std::chrono::high_resolution_clock;
+    using Clock = std::chrono::steady_clock;
 
-    void DoFrameLimiting(std::chrono::microseconds current_system_time_us);
+    void DoSpeedLimiting(std::chrono::microseconds current_system_time_us);
 
 private:
     /// Emulated system time (in microseconds) at the last limiter invocation
@@ -96,7 +97,7 @@ private:
     Clock::time_point previous_walltime = Clock::now();
 
     /// Accumulated difference between walltime and emulated time
-    std::chrono::microseconds frame_limiting_delta_err{0};
+    std::chrono::microseconds speed_limiting_delta_err{0};
 };
 
 } // namespace Core

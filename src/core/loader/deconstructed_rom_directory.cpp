@@ -1,33 +1,79 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <cinttypes>
 #include <cstring>
-#include "common/common_funcs.h"
-#include "common/file_util.h"
 #include "common/logging/log.h"
+#include "common/settings.h"
 #include "core/core.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/romfs_factory.h"
-#include "core/gdbstub/gdbstub.h"
-#include "core/hle/kernel/kernel.h"
-#include "core/hle/kernel/process.h"
+#include "core/hle/kernel/k_page_table.h"
+#include "core/hle/kernel/k_process.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/loader/deconstructed_rom_directory.h"
 #include "core/loader/nso.h"
 
+#ifdef HAS_NCE
+#include "core/arm/nce/patcher.h"
+#endif
+
+#ifndef HAS_NCE
+namespace Core::NCE {
+class Patcher {};
+} // namespace Core::NCE
+#endif
+
 namespace Loader {
 
+struct PatchCollection {
+    explicit PatchCollection(bool is_application_) : is_application{is_application_} {
+        module_patcher_indices.fill(-1);
+        patchers.emplace_back();
+    }
+
+    std::vector<Core::NCE::Patcher>* GetPatchers() {
+        if (is_application && Settings::IsNceEnabled()) {
+            return &patchers;
+        }
+        return nullptr;
+    }
+
+    size_t GetTotalPatchSize() const {
+        size_t total_size{};
+#ifdef HAS_NCE
+        for (auto& patcher : patchers) {
+            total_size += patcher.GetSectionSize();
+        }
+#endif
+        return total_size;
+    }
+
+    void SaveIndex(size_t module) {
+        module_patcher_indices[module] = static_cast<s32>(patchers.size() - 1);
+    }
+
+    s32 GetIndex(size_t module) const {
+        return module_patcher_indices[module];
+    }
+
+    s32 GetLastIndex() const {
+        return static_cast<s32>(patchers.size()) - 1;
+    }
+
+    bool is_application;
+    std::vector<Core::NCE::Patcher> patchers;
+    std::array<s32, 13> module_patcher_indices{};
+};
+
 AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys::VirtualFile file_,
-                                                                         bool override_update)
-    : AppLoader(std::move(file_)), override_update(override_update) {
-    const auto dir = file->GetContainingDirectory();
+                                                                         bool override_update_)
+    : AppLoader(std::move(file_)), override_update(override_update_), is_hbl(false) {
+    const auto file_dir = file->GetContainingDirectory();
 
     // Title ID
-    const auto npdm = dir->GetFile("main.npdm");
+    const auto npdm = file_dir->GetFile("main.npdm");
     if (npdm != nullptr) {
         const auto res = metadata.Load(npdm);
         if (res == ResultStatus::Success)
@@ -37,7 +83,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
     // Icon
     FileSys::VirtualFile icon_file = nullptr;
     for (const auto& language : FileSys::LANGUAGE_NAMES) {
-        icon_file = dir->GetFile("icon_" + std::string(language) + ".dat");
+        icon_file = file_dir->GetFile("icon_" + std::string(language) + ".dat");
         if (icon_file != nullptr) {
             icon_data = icon_file->ReadAllBytes();
             break;
@@ -46,24 +92,23 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
 
     if (icon_data.empty()) {
         // Any png, jpeg, or bmp file
-        const auto& files = dir->GetFiles();
+        const auto& files = file_dir->GetFiles();
         const auto icon_iter =
-            std::find_if(files.begin(), files.end(), [](const FileSys::VirtualFile& file) {
-                return file->GetExtension() == "png" || file->GetExtension() == "jpg" ||
-                       file->GetExtension() == "bmp" || file->GetExtension() == "jpeg";
+            std::find_if(files.begin(), files.end(), [](const FileSys::VirtualFile& f) {
+                return f->GetExtension() == "png" || f->GetExtension() == "jpg" ||
+                       f->GetExtension() == "bmp" || f->GetExtension() == "jpeg";
             });
         if (icon_iter != files.end())
             icon_data = (*icon_iter)->ReadAllBytes();
     }
 
     // Metadata
-    FileSys::VirtualFile nacp_file = dir->GetFile("control.nacp");
+    FileSys::VirtualFile nacp_file = file_dir->GetFile("control.nacp");
     if (nacp_file == nullptr) {
-        const auto& files = dir->GetFiles();
+        const auto& files = file_dir->GetFiles();
         const auto nacp_iter =
-            std::find_if(files.begin(), files.end(), [](const FileSys::VirtualFile& file) {
-                return file->GetExtension() == "nacp";
-            });
+            std::find_if(files.begin(), files.end(),
+                         [](const FileSys::VirtualFile& f) { return f->GetExtension() == "nacp"; });
         if (nacp_iter != files.end())
             nacp_file = *nacp_iter;
     }
@@ -75,12 +120,12 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
 }
 
 AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(
-    FileSys::VirtualDir directory, bool override_update)
+    FileSys::VirtualDir directory, bool override_update_, bool is_hbl_)
     : AppLoader(directory->GetFile("main")), dir(std::move(directory)),
-      override_update(override_update) {}
+      override_update(override_update_), is_hbl(is_hbl_) {}
 
-FileType AppLoader_DeconstructedRomDirectory::IdentifyType(const FileSys::VirtualFile& file) {
-    if (FileSys::IsDirectoryExeFS(file->GetContainingDirectory())) {
+FileType AppLoader_DeconstructedRomDirectory::IdentifyType(const FileSys::VirtualFile& dir_file) {
+    if (FileSys::IsDirectoryExeFS(dir_file->GetContainingDirectory())) {
         return FileType::DeconstructedRomDirectory;
     }
 
@@ -88,7 +133,7 @@ FileType AppLoader_DeconstructedRomDirectory::IdentifyType(const FileSys::Virtua
 }
 
 AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirectory::Load(
-    Kernel::Process& process) {
+    Kernel::KProcess& process, Core::System& system) {
     if (is_loaded) {
         return {ResultStatus::ErrorAlreadyLoaded, {}};
     }
@@ -113,7 +158,8 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     }
 
     if (override_update) {
-        const FileSys::PatchManager patch_manager(metadata.GetTitleID());
+        const FileSys::PatchManager patch_manager(
+            metadata.GetTitleID(), system.GetFileSystemController(), system.GetContentProvider());
         dir = patch_manager.PatchExeFS(dir);
     }
 
@@ -123,62 +169,90 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
         return {ResultStatus::ErrorMissingNPDM, {}};
     }
 
-    const ResultStatus result2 = metadata.Load(npdm);
+    const ResultStatus result2 = metadata.Reload(npdm);
     if (result2 != ResultStatus::Success) {
         return {result2, {}};
     }
     metadata.Print();
 
-    const FileSys::ProgramAddressSpaceType arch_bits{metadata.GetAddressSpaceType()};
-    if (arch_bits == FileSys::ProgramAddressSpaceType::Is32Bit ||
-        arch_bits == FileSys::ProgramAddressSpaceType::Is32BitNoMap) {
-        return {ResultStatus::Error32BitISA, {}};
-    }
+    // Enable NCE only for applications with 39-bit address space.
+    const bool is_39bit =
+        metadata.GetAddressSpaceType() == FileSys::ProgramAddressSpaceType::Is39Bit;
+    const bool is_application = metadata.GetPoolPartition() == FileSys::PoolPartition::Application;
+    Settings::SetNceEnabled(is_39bit);
 
-    if (process.LoadFromMetadata(metadata).IsError()) {
-        return {ResultStatus::ErrorUnableToParseKernelMetadata, {}};
-    }
+    const std::array static_modules = {"rtld",    "main",    "subsdk0", "subsdk1", "subsdk2",
+                                       "subsdk3", "subsdk4", "subsdk5", "subsdk6", "subsdk7",
+                                       "subsdk8", "subsdk9", "sdk"};
 
-    const FileSys::PatchManager pm(metadata.GetTitleID());
+    std::size_t code_size{};
 
-    // Load NSO modules
-    modules.clear();
-    const VAddr base_address = process.VMManager().GetCodeRegionBaseAddress();
-    VAddr next_load_addr = base_address;
-    for (const auto& module : {"rtld", "main", "subsdk0", "subsdk1", "subsdk2", "subsdk3",
-                               "subsdk4", "subsdk5", "subsdk6", "subsdk7", "sdk"}) {
-        const FileSys::VirtualFile module_file = dir->GetFile(module);
-        if (module_file == nullptr) {
+    // Define an nce patch context for each potential module.
+    PatchCollection patch_ctx{is_application};
+
+    // Use the NSO module loader to figure out the code layout
+    for (size_t i = 0; i < static_modules.size(); i++) {
+        const auto& module = static_modules[i];
+        const FileSys::VirtualFile module_file{dir->GetFile(module)};
+        if (!module_file) {
             continue;
         }
 
-        const VAddr load_addr = next_load_addr;
         const bool should_pass_arguments = std::strcmp(module, "rtld") == 0;
-        const auto tentative_next_load_addr =
-            AppLoader_NSO::LoadModule(process, *module_file, load_addr, should_pass_arguments, pm);
+        const auto tentative_next_load_addr = AppLoader_NSO::LoadModule(
+            process, system, *module_file, code_size, should_pass_arguments, false, {},
+            patch_ctx.GetPatchers(), patch_ctx.GetLastIndex());
+        if (!tentative_next_load_addr) {
+            return {ResultStatus::ErrorLoadingNSO, {}};
+        }
+
+        patch_ctx.SaveIndex(i);
+        code_size = *tentative_next_load_addr;
+    }
+
+    // Enable direct memory mapping in case of NCE.
+    const u64 fastmem_base = [&]() -> size_t {
+        if (is_application && Settings::IsNceEnabled()) {
+            auto& buffer = system.DeviceMemory().buffer;
+            buffer.EnableDirectMappedAddress();
+            return reinterpret_cast<u64>(buffer.VirtualBasePointer());
+        }
+        return 0;
+    }();
+
+    // Add patch size to the total module size
+    code_size += patch_ctx.GetTotalPatchSize();
+
+    // Setup the process code layout
+    if (process.LoadFromMetadata(metadata, code_size, fastmem_base, is_hbl).IsError()) {
+        return {ResultStatus::ErrorUnableToParseKernelMetadata, {}};
+    }
+
+    // Load NSO modules
+    modules.clear();
+    const VAddr base_address{GetInteger(process.GetEntryPoint())};
+    VAddr next_load_addr{base_address};
+    const FileSys::PatchManager pm{metadata.GetTitleID(), system.GetFileSystemController(),
+                                   system.GetContentProvider()};
+    for (size_t i = 0; i < static_modules.size(); i++) {
+        const auto& module = static_modules[i];
+        const FileSys::VirtualFile module_file{dir->GetFile(module)};
+        if (!module_file) {
+            continue;
+        }
+
+        const VAddr load_addr{next_load_addr};
+        const bool should_pass_arguments = std::strcmp(module, "rtld") == 0;
+        const auto tentative_next_load_addr = AppLoader_NSO::LoadModule(
+            process, system, *module_file, load_addr, should_pass_arguments, true, pm,
+            patch_ctx.GetPatchers(), patch_ctx.GetIndex(i));
         if (!tentative_next_load_addr) {
             return {ResultStatus::ErrorLoadingNSO, {}};
         }
 
         next_load_addr = *tentative_next_load_addr;
         modules.insert_or_assign(load_addr, module);
-        LOG_DEBUG(Loader, "loaded module {} @ 0x{:X}", module, load_addr);
-        // Register module with GDBStub
-        GDBStub::RegisterModule(module, load_addr, next_load_addr - 1, false);
-    }
-
-    // Find the RomFS by searching for a ".romfs" file in this directory
-    const auto& files = dir->GetFiles();
-    const auto romfs_iter =
-        std::find_if(files.begin(), files.end(), [](const FileSys::VirtualFile& file) {
-            return file->GetName().find(".romfs") != std::string::npos;
-        });
-
-    // Register the RomFS if a ".romfs" file was found
-    if (romfs_iter != files.end() && *romfs_iter != nullptr) {
-        romfs = *romfs_iter;
-        Core::System::GetInstance().GetFileSystemController().RegisterRomFS(
-            std::make_unique<FileSys::RomFSFactory>(*this));
+        LOG_DEBUG(Loader, "loaded module {} @ {:#X}", module, load_addr);
     }
 
     is_loaded = true;
@@ -186,17 +260,21 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
             LoadParameters{metadata.GetMainThreadPriority(), metadata.GetMainThreadStackSize()}};
 }
 
-ResultStatus AppLoader_DeconstructedRomDirectory::ReadRomFS(FileSys::VirtualFile& dir) {
-    if (romfs == nullptr)
+ResultStatus AppLoader_DeconstructedRomDirectory::ReadRomFS(FileSys::VirtualFile& out_dir) {
+    if (romfs == nullptr) {
         return ResultStatus::ErrorNoRomFS;
-    dir = romfs;
+    }
+
+    out_dir = romfs;
     return ResultStatus::Success;
 }
 
-ResultStatus AppLoader_DeconstructedRomDirectory::ReadIcon(std::vector<u8>& buffer) {
-    if (icon_data.empty())
+ResultStatus AppLoader_DeconstructedRomDirectory::ReadIcon(std::vector<u8>& out_buffer) {
+    if (icon_data.empty()) {
         return ResultStatus::ErrorNoIcon;
-    buffer = icon_data;
+    }
+
+    out_buffer = icon_data;
     return ResultStatus::Success;
 }
 
@@ -205,10 +283,12 @@ ResultStatus AppLoader_DeconstructedRomDirectory::ReadProgramId(u64& out_program
     return ResultStatus::Success;
 }
 
-ResultStatus AppLoader_DeconstructedRomDirectory::ReadTitle(std::string& title) {
-    if (name.empty())
+ResultStatus AppLoader_DeconstructedRomDirectory::ReadTitle(std::string& out_title) {
+    if (name.empty()) {
         return ResultStatus::ErrorNoControl;
-    title = name;
+    }
+
+    out_title = name;
     return ResultStatus::Success;
 }
 
@@ -216,12 +296,12 @@ bool AppLoader_DeconstructedRomDirectory::IsRomFSUpdatable() const {
     return false;
 }
 
-ResultStatus AppLoader_DeconstructedRomDirectory::ReadNSOModules(Modules& modules) {
+ResultStatus AppLoader_DeconstructedRomDirectory::ReadNSOModules(Modules& out_modules) {
     if (!is_loaded) {
         return ResultStatus::ErrorNotInitialized;
     }
 
-    modules = this->modules;
+    out_modules = this->modules;
     return ResultStatus::Success;
 }
 

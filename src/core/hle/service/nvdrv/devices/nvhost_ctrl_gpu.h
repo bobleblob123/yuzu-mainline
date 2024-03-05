@@ -1,47 +1,39 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <vector>
+
+#include "common/common_funcs.h"
 #include "common/common_types.h"
 #include "common/swap.h"
 #include "core/hle/service/nvdrv/devices/nvdevice.h"
+
+namespace Service::Nvidia {
+class EventInterface;
+}
 
 namespace Service::Nvidia::Devices {
 
 class nvhost_ctrl_gpu final : public nvdevice {
 public:
-    explicit nvhost_ctrl_gpu(Core::System& system);
+    explicit nvhost_ctrl_gpu(Core::System& system_, EventInterface& events_interface_);
     ~nvhost_ctrl_gpu() override;
 
-    u32 ioctl(Ioctl command, const std::vector<u8>& input, const std::vector<u8>& input2,
-              std::vector<u8>& output, std::vector<u8>& output2, IoctlCtrl& ctrl,
-              IoctlVersion version) override;
+    NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+                    std::span<u8> output) override;
+    NvResult Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+                    std::span<const u8> inline_input, std::span<u8> output) override;
+    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
+                    std::span<u8> inline_output) override;
+
+    void OnOpen(NvCore::SessionId session_id, DeviceFD fd) override;
+    void OnClose(DeviceFD fd) override;
+
+    Kernel::KEvent* QueryEvent(u32 event_id) override;
 
 private:
-    enum class IoctlCommand : u32_le {
-        IocGetCharacteristicsCommand = 0xC0B04705,
-        IocGetTPCMasksCommand = 0xC0184706,
-        IocGetActiveSlotMaskCommand = 0x80084714,
-        IocZcullGetCtxSizeCommand = 0x80044701,
-        IocZcullGetInfo = 0x80284702,
-        IocZbcSetTable = 0x402C4703,
-        IocZbcQueryTable = 0xC0344704,
-        IocFlushL2 = 0x40084707,
-        IocInvalICache = 0x4008470D,
-        IocSetMmudebugMode = 0x4008470E,
-        IocSetSmDebugMode = 0x4010470F,
-        IocWaitForPause = 0xC0084710,
-        IocGetTcpExceptionEnStatus = 0x80084711,
-        IocNumVsms = 0x80084712,
-        IocVsmsMapping = 0xC0044713,
-        IocGetErrorChannelUserData = 0xC008471B,
-        IocGetGpuTime = 0xC010471C,
-        IocGetCpuTimeCorrelationInfo = 0xC108471D,
-    };
-
     struct IoctlGpuCharacteristics {
         u32_le arch;                       // 0x120 (NVGPU_GPU_ARCH_GM200)
         u32_le impl;                       // 0xB (NVGPU_GPU_IMPL_GM20B)
@@ -92,16 +84,11 @@ private:
                   "IoctlCharacteristics is incorrect size");
 
     struct IoctlGpuGetTpcMasksArgs {
-        /// [in]  TPC mask buffer size reserved by userspace. Should be at least
-        /// sizeof(__u32) * fls(gpc_mask) to receive TPC mask for each GPC.
-        /// [out] full kernel buffer size
-        u32_le mask_buf_size;
-        u32_le reserved;
-
-        /// [in]  pointer to TPC mask buffer. It will receive one 32-bit TPC mask per GPC or 0 if
-        /// GPC is not enabled or not present. This parameter is ignored if mask_buf_size is 0.
-        u64_le mask_buf_addr;
-        u64_le tpc_mask_size; // Nintendo add this?
+        u32_le mask_buffer_size{};
+        INSERT_PADDING_WORDS(1);
+        u64_le mask_buffer_address{};
+        u32_le tcp_mask{};
+        INSERT_PADDING_WORDS(1);
     };
     static_assert(sizeof(IoctlGpuGetTpcMasksArgs) == 24,
                   "IoctlGpuGetTpcMasksArgs is incorrect size");
@@ -159,20 +146,31 @@ private:
     static_assert(sizeof(IoctlFlushL2) == 8, "IoctlFlushL2 is incorrect size");
 
     struct IoctlGetGpuTime {
-        u64_le gpu_time;
+        u64_le gpu_time{};
+        INSERT_PADDING_WORDS(2);
     };
-    static_assert(sizeof(IoctlGetGpuTime) == 8, "IoctlGetGpuTime is incorrect size");
+    static_assert(sizeof(IoctlGetGpuTime) == 0x10, "IoctlGetGpuTime is incorrect size");
 
-    u32 GetCharacteristics(const std::vector<u8>& input, std::vector<u8>& output,
-                           std::vector<u8>& output2, IoctlVersion version);
-    u32 GetTPCMasks(const std::vector<u8>& input, std::vector<u8>& output);
-    u32 GetActiveSlotMask(const std::vector<u8>& input, std::vector<u8>& output);
-    u32 ZCullGetCtxSize(const std::vector<u8>& input, std::vector<u8>& output);
-    u32 ZCullGetInfo(const std::vector<u8>& input, std::vector<u8>& output);
-    u32 ZBCSetTable(const std::vector<u8>& input, std::vector<u8>& output);
-    u32 ZBCQueryTable(const std::vector<u8>& input, std::vector<u8>& output);
-    u32 FlushL2(const std::vector<u8>& input, std::vector<u8>& output);
-    u32 GetGpuTime(const std::vector<u8>& input, std::vector<u8>& output);
+    NvResult GetCharacteristics1(IoctlCharacteristics& params);
+    NvResult GetCharacteristics3(IoctlCharacteristics& params,
+                                 std::span<IoctlGpuCharacteristics> gpu_characteristics);
+
+    NvResult GetTPCMasks1(IoctlGpuGetTpcMasksArgs& params);
+    NvResult GetTPCMasks3(IoctlGpuGetTpcMasksArgs& params, std::span<u32> tpc_mask);
+
+    NvResult GetActiveSlotMask(IoctlActiveSlotMask& params);
+    NvResult ZCullGetCtxSize(IoctlZcullGetCtxSize& params);
+    NvResult ZCullGetInfo(IoctlNvgpuGpuZcullGetInfoArgs& params);
+    NvResult ZBCSetTable(IoctlZbcSetTable& params);
+    NvResult ZBCQueryTable(IoctlZbcQueryTable& params);
+    NvResult FlushL2(IoctlFlushL2& params);
+    NvResult GetGpuTime(IoctlGetGpuTime& params);
+
+    EventInterface& events_interface;
+
+    // Events
+    Kernel::KEvent* error_notifier_event;
+    Kernel::KEvent* unknown_event;
 };
 
 } // namespace Service::Nvidia::Devices

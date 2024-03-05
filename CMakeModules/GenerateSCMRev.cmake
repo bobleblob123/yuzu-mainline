@@ -1,21 +1,30 @@
-# Gets a UTC timstamp and sets the provided variable to it
+# SPDX-FileCopyrightText: 2019 yuzu Emulator Project
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+# Gets a UTC timestamp and sets the provided variable to it
 function(get_timestamp _var)
     string(TIMESTAMP timestamp UTC)
     set(${_var} "${timestamp}" PARENT_SCOPE)
 endfunction()
 
-list(APPEND CMAKE_MODULE_PATH "${SRC_DIR}/externals/cmake-modules")
 # generate git/build information
 include(GetGitRevisionDescription)
-get_git_head_revision(GIT_REF_SPEC GIT_REV)
-git_describe(GIT_DESC --always --long --dirty)
-git_branch_name(GIT_BRANCH)
+if(NOT GIT_REF_SPEC)
+    get_git_head_revision(GIT_REF_SPEC GIT_REV)
+endif()
+if(NOT GIT_DESC)
+    git_describe(GIT_DESC --always --long --dirty)
+endif()
+if (NOT GIT_BRANCH)
+  git_branch_name(GIT_BRANCH)
+endif()
 get_timestamp(BUILD_DATE)
 
 # Generate cpp with Git revision from template
 # Also if this is a CI build, add the build name (ie: Nightly, Canary) to the scm_rev file as well
 set(REPO_NAME "")
 set(BUILD_VERSION "0")
+set(BUILD_ID ${DISPLAY_VERSION})
 if (BUILD_REPOSITORY)
   # regex capture the string nightly or canary into CMAKE_MATCH_1
   string(REGEX MATCH "yuzu-emu/yuzu-?(.*)" OUTVAR ${BUILD_REPOSITORY})
@@ -44,67 +53,4 @@ if (BUILD_REPOSITORY)
   endif()
 endif()
 
-# The variable SRC_DIR must be passed into the script (since it uses the current build directory for all values of CMAKE_*_DIR)
-set(VIDEO_CORE "${SRC_DIR}/src/video_core")
-set(HASH_FILES
-    "${VIDEO_CORE}/renderer_opengl/gl_shader_cache.cpp"
-    "${VIDEO_CORE}/renderer_opengl/gl_shader_cache.h"
-    "${VIDEO_CORE}/renderer_opengl/gl_shader_decompiler.cpp"
-    "${VIDEO_CORE}/renderer_opengl/gl_shader_decompiler.h"
-    "${VIDEO_CORE}/renderer_opengl/gl_shader_disk_cache.cpp"
-    "${VIDEO_CORE}/renderer_opengl/gl_shader_disk_cache.h"
-    "${VIDEO_CORE}/renderer_opengl/gl_shader_gen.cpp"
-    "${VIDEO_CORE}/renderer_opengl/gl_shader_gen.h"
-    "${VIDEO_CORE}/shader/decode/arithmetic.cpp"
-    "${VIDEO_CORE}/shader/decode/arithmetic_half.cpp"
-    "${VIDEO_CORE}/shader/decode/arithmetic_half_immediate.cpp"
-    "${VIDEO_CORE}/shader/decode/arithmetic_immediate.cpp"
-    "${VIDEO_CORE}/shader/decode/arithmetic_integer.cpp"
-    "${VIDEO_CORE}/shader/decode/arithmetic_integer_immediate.cpp"
-    "${VIDEO_CORE}/shader/decode/bfe.cpp"
-    "${VIDEO_CORE}/shader/decode/bfi.cpp"
-    "${VIDEO_CORE}/shader/decode/conversion.cpp"
-    "${VIDEO_CORE}/shader/decode/ffma.cpp"
-    "${VIDEO_CORE}/shader/decode/float_set.cpp"
-    "${VIDEO_CORE}/shader/decode/float_set_predicate.cpp"
-    "${VIDEO_CORE}/shader/decode/half_set.cpp"
-    "${VIDEO_CORE}/shader/decode/half_set_predicate.cpp"
-    "${VIDEO_CORE}/shader/decode/hfma2.cpp"
-    "${VIDEO_CORE}/shader/decode/image.cpp"
-    "${VIDEO_CORE}/shader/decode/integer_set.cpp"
-    "${VIDEO_CORE}/shader/decode/integer_set_predicate.cpp"
-    "${VIDEO_CORE}/shader/decode/memory.cpp"
-    "${VIDEO_CORE}/shader/decode/texture.cpp"
-    "${VIDEO_CORE}/shader/decode/other.cpp"
-    "${VIDEO_CORE}/shader/decode/predicate_set_predicate.cpp"
-    "${VIDEO_CORE}/shader/decode/predicate_set_register.cpp"
-    "${VIDEO_CORE}/shader/decode/register_set_predicate.cpp"
-    "${VIDEO_CORE}/shader/decode/shift.cpp"
-    "${VIDEO_CORE}/shader/decode/video.cpp"
-    "${VIDEO_CORE}/shader/decode/warp.cpp"
-    "${VIDEO_CORE}/shader/decode/xmad.cpp"
-    "${VIDEO_CORE}/shader/ast.cpp"
-    "${VIDEO_CORE}/shader/ast.h"
-    "${VIDEO_CORE}/shader/compiler_settings.cpp"
-    "${VIDEO_CORE}/shader/compiler_settings.h"
-    "${VIDEO_CORE}/shader/const_buffer_locker.cpp"
-    "${VIDEO_CORE}/shader/const_buffer_locker.h"
-    "${VIDEO_CORE}/shader/control_flow.cpp"
-    "${VIDEO_CORE}/shader/control_flow.h"
-    "${VIDEO_CORE}/shader/decode.cpp"
-    "${VIDEO_CORE}/shader/expr.cpp"
-    "${VIDEO_CORE}/shader/expr.h"
-    "${VIDEO_CORE}/shader/node.h"
-    "${VIDEO_CORE}/shader/node_helper.cpp"
-    "${VIDEO_CORE}/shader/node_helper.h"
-    "${VIDEO_CORE}/shader/shader_ir.cpp"
-    "${VIDEO_CORE}/shader/shader_ir.h"
-    "${VIDEO_CORE}/shader/track.cpp"
-)
-set(COMBINED "")
-foreach (F IN LISTS HASH_FILES)
-    file(READ ${F} TMP)
-    set(COMBINED "${COMBINED}${TMP}")
-endforeach()
-string(MD5 SHADER_CACHE_VERSION "${COMBINED}")
-configure_file("${SRC_DIR}/src/common/scm_rev.cpp.in" "scm_rev.cpp" @ONLY)
+configure_file(scm_rev.cpp.in scm_rev.cpp @ONLY)

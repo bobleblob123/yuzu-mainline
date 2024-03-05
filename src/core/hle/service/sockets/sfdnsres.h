@@ -1,21 +1,28 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
-#include "core/hle/kernel/hle_ipc.h"
 #include "core/hle/service/service.h"
+
+namespace Core {
+class System;
+}
 
 namespace Service::Sockets {
 
 class SFDNSRES final : public ServiceFramework<SFDNSRES> {
 public:
-    explicit SFDNSRES();
+    explicit SFDNSRES(Core::System& system_);
     ~SFDNSRES() override;
 
 private:
-    void GetAddrInfo(Kernel::HLERequestContext& ctx);
+    void GetHostByNameRequest(HLERequestContext& ctx);
+    void GetGaiStringErrorRequest(HLERequestContext& ctx);
+    void GetHostByNameRequestWithOptions(HLERequestContext& ctx);
+    void GetAddrInfoRequest(HLERequestContext& ctx);
+    void GetAddrInfoRequestWithOptions(HLERequestContext& ctx);
+    void ResolverSetOptionRequest(HLERequestContext& ctx);
 };
 
 } // namespace Service::Sockets

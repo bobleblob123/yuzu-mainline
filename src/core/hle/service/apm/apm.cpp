@@ -1,25 +1,27 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
-#include "core/hle/ipc_helpers.h"
+#include "core/core.h"
 #include "core/hle/service/apm/apm.h"
-#include "core/hle/service/apm/interface.h"
+#include "core/hle/service/apm/apm_interface.h"
+#include "core/hle/service/server_manager.h"
 
 namespace Service::APM {
 
 Module::Module() = default;
 Module::~Module() = default;
 
-void InstallInterfaces(Core::System& system) {
-    auto module_ = std::make_shared<Module>();
-    std::make_shared<APM>(module_, system.GetAPMController(), "apm")
-        ->InstallAsService(system.ServiceManager());
-    std::make_shared<APM>(module_, system.GetAPMController(), "apm:p")
-        ->InstallAsService(system.ServiceManager());
-    std::make_shared<APM>(module_, system.GetAPMController(), "apm:am")
-        ->InstallAsService(system.ServiceManager());
-    std::make_shared<APM_Sys>(system.GetAPMController())->InstallAsService(system.ServiceManager());
+void LoopProcess(Core::System& system) {
+    auto module = std::make_shared<Module>();
+    auto server_manager = std::make_unique<ServerManager>(system);
+
+    server_manager->RegisterNamedService(
+        "apm", std::make_shared<APM>(system, module, system.GetAPMController(), "apm"));
+    server_manager->RegisterNamedService(
+        "apm:am", std::make_shared<APM>(system, module, system.GetAPMController(), "apm:am"));
+    server_manager->RegisterNamedService(
+        "apm:sys", std::make_shared<APM_Sys>(system, system.GetAPMController()));
+    ServerManager::RunServer(std::move(server_manager));
 }
 
 } // namespace Service::APM

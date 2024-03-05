@@ -1,12 +1,13 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cstddef>
 #include <vector>
 
 #include "common/logging/log.h"
+#include "common/scope_exit.h"
 #include "core/file_sys/program_metadata.h"
+#include "core/file_sys/vfs/vfs.h"
 #include "core/loader/loader.h"
 
 namespace FileSys {
@@ -33,11 +34,55 @@ Loader::ResultStatus ProgramMetadata::Load(VirtualFile file) {
         return Loader::ResultStatus::ErrorBadACIHeader;
     }
 
-    if (sizeof(FileAccessControl) != file->ReadObject(&acid_file_access, acid_header.fac_offset)) {
+    // Load acid_file_access per-component instead of the entire struct, since this struct does not
+    // reflect the layout of the real data.
+    std::size_t current_offset = acid_header.fac_offset;
+    if (sizeof(FileAccessControl::version) != file->ReadBytes(&acid_file_access.version,
+                                                              sizeof(FileAccessControl::version),
+                                                              current_offset)) {
+        return Loader::ResultStatus::ErrorBadFileAccessControl;
+    }
+    if (sizeof(FileAccessControl::permissions) !=
+        file->ReadBytes(&acid_file_access.permissions, sizeof(FileAccessControl::permissions),
+                        current_offset += sizeof(FileAccessControl::version) + 3)) {
+        return Loader::ResultStatus::ErrorBadFileAccessControl;
+    }
+    if (sizeof(FileAccessControl::unknown) !=
+        file->ReadBytes(&acid_file_access.unknown, sizeof(FileAccessControl::unknown),
+                        current_offset + sizeof(FileAccessControl::permissions))) {
         return Loader::ResultStatus::ErrorBadFileAccessControl;
     }
 
-    if (sizeof(FileAccessHeader) != file->ReadObject(&aci_file_access, aci_header.fah_offset)) {
+    // Load aci_file_access per-component instead of the entire struct, same as acid_file_access
+    current_offset = aci_header.fah_offset;
+    if (sizeof(FileAccessHeader::version) != file->ReadBytes(&aci_file_access.version,
+                                                             sizeof(FileAccessHeader::version),
+                                                             current_offset)) {
+        return Loader::ResultStatus::ErrorBadFileAccessHeader;
+    }
+    if (sizeof(FileAccessHeader::permissions) !=
+        file->ReadBytes(&aci_file_access.permissions, sizeof(FileAccessHeader::permissions),
+                        current_offset += sizeof(FileAccessHeader::version) + 3)) {
+        return Loader::ResultStatus::ErrorBadFileAccessHeader;
+    }
+    if (sizeof(FileAccessHeader::unk_offset) !=
+        file->ReadBytes(&aci_file_access.unk_offset, sizeof(FileAccessHeader::unk_offset),
+                        current_offset += sizeof(FileAccessHeader::permissions))) {
+        return Loader::ResultStatus::ErrorBadFileAccessHeader;
+    }
+    if (sizeof(FileAccessHeader::unk_size) !=
+        file->ReadBytes(&aci_file_access.unk_size, sizeof(FileAccessHeader::unk_size),
+                        current_offset += sizeof(FileAccessHeader::unk_offset))) {
+        return Loader::ResultStatus::ErrorBadFileAccessHeader;
+    }
+    if (sizeof(FileAccessHeader::unk_offset_2) !=
+        file->ReadBytes(&aci_file_access.unk_offset_2, sizeof(FileAccessHeader::unk_offset_2),
+                        current_offset += sizeof(FileAccessHeader::unk_size))) {
+        return Loader::ResultStatus::ErrorBadFileAccessHeader;
+    }
+    if (sizeof(FileAccessHeader::unk_size_2) !=
+        file->ReadBytes(&aci_file_access.unk_size_2, sizeof(FileAccessHeader::unk_size_2),
+                        current_offset + sizeof(FileAccessHeader::unk_offset_2))) {
         return Loader::ResultStatus::ErrorBadFileAccessHeader;
     }
 
@@ -51,23 +96,48 @@ Loader::ResultStatus ProgramMetadata::Load(VirtualFile file) {
     return Loader::ResultStatus::Success;
 }
 
+Loader::ResultStatus ProgramMetadata::Reload(VirtualFile file) {
+    const u64 original_program_id = aci_header.title_id;
+    SCOPE_EXIT {
+        aci_header.title_id = original_program_id;
+    };
+
+    return this->Load(file);
+}
+
+/*static*/ ProgramMetadata ProgramMetadata::GetDefault() {
+    // Allow use of cores 0~3 and thread priorities 16~63.
+    constexpr u32 default_thread_info_capability = 0x30043F7;
+
+    ProgramMetadata result;
+
+    result.LoadManual(
+        true /*is_64_bit*/, FileSys::ProgramAddressSpaceType::Is39Bit /*address_space*/,
+        0x2c /*main_thread_prio*/, 0 /*main_thread_core*/, 0x100000 /*main_thread_stack_size*/,
+        0 /*title_id*/, 0xFFFFFFFFFFFFFFFF /*filesystem_permissions*/, 0 /*system_resource_size*/,
+        {default_thread_info_capability} /*capabilities*/);
+
+    return result;
+}
+
 void ProgramMetadata::LoadManual(bool is_64_bit, ProgramAddressSpaceType address_space,
-                                 u8 main_thread_prio, u8 main_thread_core,
+                                 s32 main_thread_prio, u32 main_thread_core,
                                  u32 main_thread_stack_size, u64 title_id,
-                                 u64 filesystem_permissions,
+                                 u64 filesystem_permissions, u32 system_resource_size,
                                  KernelCapabilityDescriptors capabilities) {
     npdm_header.has_64_bit_instructions.Assign(is_64_bit);
     npdm_header.address_space_type.Assign(address_space);
-    npdm_header.main_thread_priority = main_thread_prio;
-    npdm_header.main_thread_cpu = main_thread_core;
+    npdm_header.main_thread_priority = static_cast<u8>(main_thread_prio);
+    npdm_header.main_thread_cpu = static_cast<u8>(main_thread_core);
     npdm_header.main_stack_size = main_thread_stack_size;
     aci_header.title_id = title_id;
     aci_file_access.permissions = filesystem_permissions;
-    aci_kernel_capabilities = std ::move(capabilities);
+    npdm_header.system_resource_size = system_resource_size;
+    aci_kernel_capabilities = std::move(capabilities);
 }
 
 bool ProgramMetadata::Is64BitProgram() const {
-    return npdm_header.has_64_bit_instructions;
+    return npdm_header.has_64_bit_instructions.As<bool>();
 }
 
 ProgramAddressSpaceType ProgramMetadata::GetAddressSpaceType() const {
@@ -96,6 +166,10 @@ u64 ProgramMetadata::GetFilesystemPermissions() const {
 
 u32 ProgramMetadata::GetSystemResourceSize() const {
     return npdm_header.system_resource_size;
+}
+
+PoolPartition ProgramMetadata::GetPoolPartition() const {
+    return acid_header.pool_partition;
 }
 
 const ProgramMetadata::KernelCapabilityDescriptors& ProgramMetadata::GetKernelCapabilities() const {
@@ -133,7 +207,7 @@ void ProgramMetadata::Print() const {
     // Begin ACID printing (potential perms, signed)
     LOG_DEBUG(Service_FS, "Magic:                  {:.4}", acid_header.magic.data());
     LOG_DEBUG(Service_FS, "Flags:                  0x{:02X}", acid_header.flags);
-    LOG_DEBUG(Service_FS, " > Is Retail:           {}", acid_header.is_retail ? "YES" : "NO");
+    LOG_DEBUG(Service_FS, " > Is Retail:           {}", acid_header.production_flag ? "YES" : "NO");
     LOG_DEBUG(Service_FS, "Title ID Min:           0x{:016X}", acid_header.title_id_min);
     LOG_DEBUG(Service_FS, "Title ID Max:           0x{:016X}", acid_header.title_id_max);
     LOG_DEBUG(Service_FS, "Filesystem Access:      0x{:016X}\n", acid_file_access.permissions);

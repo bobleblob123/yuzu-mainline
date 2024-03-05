@@ -1,10 +1,13 @@
-// Copyright 2019 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include "core/loader/loader.h"
+
+namespace Core {
+class System;
+}
 
 namespace FileSys {
 class KIP;
@@ -18,15 +21,17 @@ public:
     ~AppLoader_KIP() override;
 
     /**
-     * Returns the type of the file
-     * @param file std::shared_ptr<VfsFile> open file
-     * @return FileType found, or FileType::Error if this loader doesn't know it
+     * Identifies whether or not the given file is a KIP.
+     *
+     * @param in_file The file to identify.
+     *
+     * @return FileType::KIP if found, or FileType::Error if unknown.
      */
-    static FileType IdentifyType(const FileSys::VirtualFile& file);
+    static FileType IdentifyType(const FileSys::VirtualFile& in_file);
 
     FileType GetFileType() const override;
 
-    LoadResult Load(Kernel::Process& process) override;
+    LoadResult Load(Kernel::KProcess& process, Core::System& system) override;
 
 private:
     std::unique_ptr<FileSys::KIP> kip;

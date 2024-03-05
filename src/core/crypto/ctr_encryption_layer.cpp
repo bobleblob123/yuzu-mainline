@@ -1,17 +1,15 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <cstring>
-#include "common/assert.h"
 #include "core/crypto/ctr_encryption_layer.h"
 
 namespace Core::Crypto {
 
 CTREncryptionLayer::CTREncryptionLayer(FileSys::VirtualFile base_, Key128 key_,
-                                       std::size_t base_offset)
-    : EncryptionLayer(std::move(base_)), base_offset(base_offset), cipher(key_, Mode::CTR),
-      iv(16, 0) {}
+                                       std::size_t base_offset_)
+    : EncryptionLayer(std::move(base_)), base_offset(base_offset_), cipher(key_, Mode::CTR) {}
 
 std::size_t CTREncryptionLayer::Read(u8* data, std::size_t length, std::size_t offset) const {
     if (length == 0)
@@ -39,9 +37,8 @@ std::size_t CTREncryptionLayer::Read(u8* data, std::size_t length, std::size_t o
     return read + Read(data + read, length - read, offset + read);
 }
 
-void CTREncryptionLayer::SetIV(const std::vector<u8>& iv_) {
-    const auto length = std::min(iv_.size(), iv.size());
-    iv.assign(iv_.cbegin(), iv_.cbegin() + length);
+void CTREncryptionLayer::SetIV(const IVData& iv_) {
+    iv = iv_;
 }
 
 void CTREncryptionLayer::UpdateIV(std::size_t offset) const {

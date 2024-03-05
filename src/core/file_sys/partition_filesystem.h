@@ -1,6 +1,5 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
@@ -10,7 +9,7 @@
 #include "common/common_funcs.h"
 #include "common/common_types.h"
 #include "common/swap.h"
-#include "core/file_sys/vfs.h"
+#include "core/file_sys/vfs/vfs.h"
 
 namespace Loader {
 enum class ResultStatus : u16;
@@ -24,7 +23,7 @@ namespace FileSys {
  */
 class PartitionFilesystem : public ReadOnlyVfsDirectory {
 public:
-    explicit PartitionFilesystem(std::shared_ptr<VfsFile> file);
+    explicit PartitionFilesystem(VirtualFile file);
     ~PartitionFilesystem() override;
 
     Loader::ResultStatus GetStatus() const;
@@ -32,10 +31,10 @@ public:
     std::map<std::string, u64> GetFileOffsets() const;
     std::map<std::string, u64> GetFileSizes() const;
 
-    std::vector<std::shared_ptr<VfsFile>> GetFiles() const override;
-    std::vector<std::shared_ptr<VfsDirectory>> GetSubdirectories() const override;
+    std::vector<VirtualFile> GetFiles() const override;
+    std::vector<VirtualDir> GetSubdirectories() const override;
     std::string GetName() const override;
-    std::shared_ptr<VfsDirectory> GetParentDirectory() const override;
+    VirtualDir GetParentDirectory() const override;
     void PrintDebugInfo() const;
 
 private:

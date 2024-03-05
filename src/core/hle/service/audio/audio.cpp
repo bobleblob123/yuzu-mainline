@@ -1,41 +1,35 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
-#include "core/hle/service/audio/audctl.h"
-#include "core/hle/service/audio/auddbg.h"
-#include "core/hle/service/audio/audin_a.h"
-#include "core/hle/service/audio/audin_u.h"
+#include "core/core.h"
 #include "core/hle/service/audio/audio.h"
-#include "core/hle/service/audio/audout_a.h"
-#include "core/hle/service/audio/audout_u.h"
-#include "core/hle/service/audio/audrec_a.h"
-#include "core/hle/service/audio/audrec_u.h"
-#include "core/hle/service/audio/audren_a.h"
-#include "core/hle/service/audio/audren_u.h"
-#include "core/hle/service/audio/codecctl.h"
-#include "core/hle/service/audio/hwopus.h"
+#include "core/hle/service/audio/audio_controller.h"
+#include "core/hle/service/audio/audio_in_manager.h"
+#include "core/hle/service/audio/audio_out_manager.h"
+#include "core/hle/service/audio/audio_renderer_manager.h"
+#include "core/hle/service/audio/final_output_recorder_manager.h"
+#include "core/hle/service/audio/final_output_recorder_manager_for_applet.h"
+#include "core/hle/service/audio/hardware_opus_decoder_manager.h"
+#include "core/hle/service/server_manager.h"
 #include "core/hle/service/service.h"
 
 namespace Service::Audio {
 
-void InstallInterfaces(SM::ServiceManager& service_manager, Core::System& system) {
-    std::make_shared<AudCtl>()->InstallAsService(service_manager);
-    std::make_shared<AudOutA>()->InstallAsService(service_manager);
-    std::make_shared<AudOutU>(system)->InstallAsService(service_manager);
-    std::make_shared<AudInA>()->InstallAsService(service_manager);
-    std::make_shared<AudInU>()->InstallAsService(service_manager);
-    std::make_shared<AudRecA>()->InstallAsService(service_manager);
-    std::make_shared<AudRecU>()->InstallAsService(service_manager);
-    std::make_shared<AudRenA>()->InstallAsService(service_manager);
-    std::make_shared<AudRenU>(system)->InstallAsService(service_manager);
-    std::make_shared<CodecCtl>()->InstallAsService(service_manager);
-    std::make_shared<HwOpus>()->InstallAsService(service_manager);
+void LoopProcess(Core::System& system) {
+    auto server_manager = std::make_unique<ServerManager>(system);
 
-    std::make_shared<AudDbg>("audin:d")->InstallAsService(service_manager);
-    std::make_shared<AudDbg>("audout:d")->InstallAsService(service_manager);
-    std::make_shared<AudDbg>("audrec:d")->InstallAsService(service_manager);
-    std::make_shared<AudDbg>("audren:d")->InstallAsService(service_manager);
+    server_manager->RegisterNamedService("audctl", std::make_shared<IAudioController>(system));
+    server_manager->RegisterNamedService("audin:u", std::make_shared<IAudioInManager>(system));
+    server_manager->RegisterNamedService("audout:u", std::make_shared<IAudioOutManager>(system));
+    server_manager->RegisterNamedService(
+        "audrec:a", std::make_shared<IFinalOutputRecorderManagerForApplet>(system));
+    server_manager->RegisterNamedService("audrec:u",
+                                         std::make_shared<IFinalOutputRecorderManager>(system));
+    server_manager->RegisterNamedService("audren:u",
+                                         std::make_shared<IAudioRendererManager>(system));
+    server_manager->RegisterNamedService("hwopus",
+                                         std::make_shared<IHardwareOpusDecoderManager>(system));
+    ServerManager::RunServer(std::move(server_manager));
 }
 
 } // namespace Service::Audio

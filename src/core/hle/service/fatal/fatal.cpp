@@ -1,27 +1,26 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
 #include <cstring>
 #include <ctime>
 #include <fmt/chrono.h>
-#include "common/file_util.h"
 #include "common/logging/log.h"
 #include "common/scm_rev.h"
 #include "common/swap.h"
 #include "core/core.h"
-#include "core/hle/ipc_helpers.h"
-#include "core/hle/kernel/process.h"
 #include "core/hle/service/fatal/fatal.h"
 #include "core/hle/service/fatal/fatal_p.h"
 #include "core/hle/service/fatal/fatal_u.h"
+#include "core/hle/service/ipc_helpers.h"
+#include "core/hle/service/server_manager.h"
 #include "core/reporter.h"
 
 namespace Service::Fatal {
 
-Module::Interface::Interface(std::shared_ptr<Module> module, Core::System& system, const char* name)
-    : ServiceFramework(name), module(std::move(module)), system(system) {}
+Module::Interface::Interface(std::shared_ptr<Module> module_, Core::System& system_,
+                             const char* name)
+    : ServiceFramework{system_, name}, module{std::move(module_)} {}
 
 Module::Interface::~Interface() = default;
 
@@ -64,9 +63,8 @@ enum class FatalType : u32 {
     ErrorScreen = 2,
 };
 
-static void GenerateErrorReport(Core::System& system, ResultCode error_code,
-                                const FatalInfo& info) {
-    const auto title_id = system.CurrentProcess()->GetTitleID();
+static void GenerateErrorReport(Core::System& system, Result error_code, const FatalInfo& info) {
+    const auto title_id = system.GetApplicationProcessProgramID();
     std::string crash_report = fmt::format(
         "Yuzu {}-{} crash report\n"
         "Title ID:                        {:016x}\n"
@@ -75,8 +73,8 @@ static void GenerateErrorReport(Core::System& system, ResultCode error_code,
         "Program entry point:             0x{:16X}\n"
         "\n",
         Common::g_scm_branch, Common::g_scm_desc, title_id, error_code.raw,
-        2000 + static_cast<u32>(error_code.module.Value()),
-        static_cast<u32>(error_code.description.Value()), info.set_flags, info.program_entry_point);
+        2000 + static_cast<u32>(error_code.GetModule()),
+        static_cast<u32>(error_code.GetDescription()), info.set_flags, info.program_entry_point);
     if (info.backtrace_size != 0x0) {
         crash_report += "Registers:\n";
         for (size_t i = 0; i < info.registers.size(); i++) {
@@ -91,7 +89,7 @@ static void GenerateErrorReport(Core::System& system, ResultCode error_code,
         crash_report += fmt::format("    ESR:                         {:016x}\n", info.esr);
         crash_report += fmt::format("    FAR:                         {:016x}\n", info.far);
         crash_report += "\nBacktrace:\n";
-        for (size_t i = 0; i < info.backtrace_size; i++) {
+        for (u32 i = 0; i < std::min<u32>(info.backtrace_size, 32); i++) {
             crash_report +=
                 fmt::format("    Backtrace[{:02d}]:               {:016x}\n", i, info.backtrace[i]);
         }
@@ -108,10 +106,11 @@ static void GenerateErrorReport(Core::System& system, ResultCode error_code,
         info.backtrace_size, info.ArchAsString(), info.unk10);
 }
 
-static void ThrowFatalError(Core::System& system, ResultCode error_code, FatalType fatal_type,
+static void ThrowFatalError(Core::System& system, Result error_code, FatalType fatal_type,
                             const FatalInfo& info) {
-    LOG_ERROR(Service_Fatal, "Threw fatal error type {} with error code 0x{:X}",
-              static_cast<u32>(fatal_type), error_code.raw);
+    LOG_ERROR(Service_Fatal, "Threw fatal error type {} with error code 0x{:X}", fatal_type,
+              error_code.raw);
+
     switch (fatal_type) {
     case FatalType::ErrorReportAndScreen:
         GenerateErrorReport(system, error_code, info);
@@ -127,32 +126,32 @@ static void ThrowFatalError(Core::System& system, ResultCode error_code, FatalTy
     }
 }
 
-void Module::Interface::ThrowFatal(Kernel::HLERequestContext& ctx) {
+void Module::Interface::ThrowFatal(HLERequestContext& ctx) {
     LOG_ERROR(Service_Fatal, "called");
     IPC::RequestParser rp{ctx};
-    const auto error_code = rp.Pop<ResultCode>();
+    const auto error_code = rp.Pop<Result>();
 
     ThrowFatalError(system, error_code, FatalType::ErrorScreen, {});
     IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(RESULT_SUCCESS);
+    rb.Push(ResultSuccess);
 }
 
-void Module::Interface::ThrowFatalWithPolicy(Kernel::HLERequestContext& ctx) {
+void Module::Interface::ThrowFatalWithPolicy(HLERequestContext& ctx) {
     LOG_ERROR(Service_Fatal, "called");
     IPC::RequestParser rp(ctx);
-    const auto error_code = rp.Pop<ResultCode>();
+    const auto error_code = rp.Pop<Result>();
     const auto fatal_type = rp.PopEnum<FatalType>();
 
     ThrowFatalError(system, error_code, fatal_type,
                     {}); // No info is passed with ThrowFatalWithPolicy
     IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(RESULT_SUCCESS);
+    rb.Push(ResultSuccess);
 }
 
-void Module::Interface::ThrowFatalWithCpuContext(Kernel::HLERequestContext& ctx) {
+void Module::Interface::ThrowFatalWithCpuContext(HLERequestContext& ctx) {
     LOG_ERROR(Service_Fatal, "called");
     IPC::RequestParser rp(ctx);
-    const auto error_code = rp.Pop<ResultCode>();
+    const auto error_code = rp.Pop<Result>();
     const auto fatal_type = rp.PopEnum<FatalType>();
     const auto fatal_info = ctx.ReadBuffer();
     FatalInfo info{};
@@ -162,13 +161,16 @@ void Module::Interface::ThrowFatalWithCpuContext(Kernel::HLERequestContext& ctx)
 
     ThrowFatalError(system, error_code, fatal_type, info);
     IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(RESULT_SUCCESS);
+    rb.Push(ResultSuccess);
 }
 
-void InstallInterfaces(SM::ServiceManager& service_manager, Core::System& system) {
+void LoopProcess(Core::System& system) {
+    auto server_manager = std::make_unique<ServerManager>(system);
     auto module = std::make_shared<Module>();
-    std::make_shared<Fatal_P>(module, system)->InstallAsService(service_manager);
-    std::make_shared<Fatal_U>(module, system)->InstallAsService(service_manager);
+
+    server_manager->RegisterNamedService("fatal:p", std::make_shared<Fatal_P>(module, system));
+    server_manager->RegisterNamedService("fatal:u", std::make_shared<Fatal_U>(module, system));
+    ServerManager::RunServer(std::move(server_manager));
 }
 
 } // namespace Service::Fatal

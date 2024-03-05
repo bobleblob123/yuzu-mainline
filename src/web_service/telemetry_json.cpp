@@ -1,18 +1,19 @@
-// Copyright 2017 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2017 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <json.hpp>
+#include <nlohmann/json.hpp>
 #include "common/detached_tasks.h"
-#include "common/web_result.h"
 #include "web_service/telemetry_json.h"
 #include "web_service/web_backend.h"
+#include "web_service/web_result.h"
 
 namespace WebService {
 
+namespace Telemetry = Common::Telemetry;
+
 struct TelemetryJson::Impl {
-    Impl(std::string host, std::string username, std::string token)
-        : host{std::move(host)}, username{std::move(username)}, token{std::move(token)} {}
+    Impl(std::string host_, std::string username_, std::string token_)
+        : host{std::move(host_)}, username{std::move(username_)}, token{std::move(token_)} {}
 
     nlohmann::json& TopSection() {
         return sections[static_cast<u8>(Telemetry::FieldType::None)];
@@ -117,12 +118,13 @@ bool TelemetryJson::SubmitTestcase() {
     impl->SerializeSection(Telemetry::FieldType::Session, "Session");
     impl->SerializeSection(Telemetry::FieldType::UserFeedback, "UserFeedback");
     impl->SerializeSection(Telemetry::FieldType::UserSystem, "UserSystem");
+    impl->SerializeSection(Telemetry::FieldType::UserConfig, "UserConfig");
 
     auto content = impl->TopSection().dump();
     Client client(impl->host, impl->username, impl->token);
     auto value = client.PostJson("/gamedb/testcase", content, false);
 
-    return value.result_code == Common::WebResult::Code::Success;
+    return value.result_code == WebResult::Code::Success;
 }
 
 } // namespace WebService

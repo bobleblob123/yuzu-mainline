@@ -1,77 +1,81 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
+#include <atomic>
 #include <map>
+#include <mutex>
 #include <optional>
+#include <vector>
+#include <boost/container/small_vector.hpp>
 
 #include "common/common_types.h"
-#include "common/page_table.h"
+#include "common/multi_level_page_table.h"
+#include "common/range_map.h"
+#include "common/scratch_buffer.h"
+#include "common/virtual_buffer.h"
+#include "video_core/cache_types.h"
+#include "video_core/host1x/gpu_device_memory_manager.h"
+#include "video_core/pte_kind.h"
 
 namespace VideoCore {
 class RasterizerInterface;
 }
 
+namespace VideoCommon {
+class InvalidationAccumulator;
+}
+
 namespace Core {
 class System;
-}
+} // namespace Core
 
 namespace Tegra {
 
-/**
- * Represents a VMA in an address space. A VMA is a contiguous region of virtual addressing space
- * with homogeneous attributes across its extents. In this particular implementation each VMA is
- * also backed by a single host memory allocation.
- */
-struct VirtualMemoryArea {
-    enum class Type : u8 {
-        Unmapped,
-        Allocated,
-        Mapped,
-    };
-
-    /// Virtual base address of the region.
-    GPUVAddr base{};
-    /// Size of the region.
-    u64 size{};
-    /// Memory area mapping type.
-    Type type{Type::Unmapped};
-    /// CPU memory mapped address corresponding to this memory area.
-    VAddr backing_addr{};
-    /// Offset into the backing_memory the mapping starts from.
-    std::size_t offset{};
-    /// Pointer backing this VMA.
-    u8* backing_memory{};
-
-    /// Tests if this area can be merged to the right with `next`.
-    bool CanBeMergedWith(const VirtualMemoryArea& next) const;
-};
-
 class MemoryManager final {
 public:
-    explicit MemoryManager(Core::System& system, VideoCore::RasterizerInterface& rasterizer);
+    explicit MemoryManager(Core::System& system_, u64 address_space_bits_ = 40,
+                           GPUVAddr split_address = 1ULL << 34, u64 big_page_bits_ = 16,
+                           u64 page_bits_ = 12);
+    explicit MemoryManager(Core::System& system_, MaxwellDeviceMemoryManager& memory_,
+                           u64 address_space_bits_ = 40, GPUVAddr split_address = 1ULL << 34,
+                           u64 big_page_bits_ = 16, u64 page_bits_ = 12);
     ~MemoryManager();
 
-    GPUVAddr AllocateSpace(u64 size, u64 align);
-    GPUVAddr AllocateSpace(GPUVAddr addr, u64 size, u64 align);
-    GPUVAddr MapBufferEx(VAddr cpu_addr, u64 size);
-    GPUVAddr MapBufferEx(VAddr cpu_addr, GPUVAddr addr, u64 size);
-    GPUVAddr UnmapBuffer(GPUVAddr addr, u64 size);
-    std::optional<VAddr> GpuToCpuAddress(GPUVAddr addr) const;
+    size_t GetID() const {
+        return unique_identifier;
+    }
+
+    /// Binds a renderer to the memory manager.
+    void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
+
+    [[nodiscard]] std::optional<DAddr> GpuToCpuAddress(GPUVAddr addr) const;
+
+    [[nodiscard]] std::optional<DAddr> GpuToCpuAddress(GPUVAddr addr, std::size_t size) const;
 
     template <typename T>
-    T Read(GPUVAddr addr) const;
+    [[nodiscard]] T Read(GPUVAddr addr) const;
 
     template <typename T>
     void Write(GPUVAddr addr, T data);
 
-    u8* GetPointer(GPUVAddr addr);
-    const u8* GetPointer(GPUVAddr addr) const;
+    [[nodiscard]] u8* GetPointer(GPUVAddr addr);
+    [[nodiscard]] const u8* GetPointer(GPUVAddr addr) const;
 
-    /// Returns true if the block is continuous in host memory, false otherwise
-    bool IsBlockContinuous(GPUVAddr start, std::size_t size) const;
+    template <typename T>
+    [[nodiscard]] T* GetPointer(GPUVAddr addr) {
+        const auto address{GpuToCpuAddress(addr)};
+        if (!address) {
+            return {};
+        }
+        return memory.GetPointer<T>(*address);
+    }
+
+    template <typename T>
+    [[nodiscard]] const T* GetPointer(GPUVAddr addr) const {
+        return GetPointer<T*>(addr);
+    }
 
     /**
      * ReadBlock and WriteBlock are full read and write operations over virtual
@@ -79,9 +83,12 @@ public:
      * in the Host Memory counterpart. Note: This functions cause Host GPU Memory
      * Flushes and Invalidations, respectively to each operation.
      */
-    void ReadBlock(GPUVAddr src_addr, void* dest_buffer, std::size_t size) const;
-    void WriteBlock(GPUVAddr dest_addr, const void* src_buffer, std::size_t size);
-    void CopyBlock(GPUVAddr dest_addr, GPUVAddr src_addr, std::size_t size);
+    void ReadBlock(GPUVAddr gpu_src_addr, void* dest_buffer, std::size_t size,
+                   VideoCommon::CacheType which = VideoCommon::CacheType::All) const;
+    void WriteBlock(GPUVAddr gpu_dest_addr, const void* src_buffer, std::size_t size,
+                    VideoCommon::CacheType which = VideoCommon::CacheType::All);
+    void CopyBlock(GPUVAddr gpu_dest_addr, GPUVAddr gpu_src_addr, std::size_t size,
+                   VideoCommon::CacheType which = VideoCommon::CacheType::All);
 
     /**
      * ReadBlockUnsafe and WriteBlockUnsafe are special versions of ReadBlock and
@@ -93,92 +100,155 @@ public:
      * WriteBlockUnsafe instead of WriteBlock since it shouldn't invalidate the texture
      * being flushed.
      */
-    void ReadBlockUnsafe(GPUVAddr src_addr, void* dest_buffer, std::size_t size) const;
-    void WriteBlockUnsafe(GPUVAddr dest_addr, const void* src_buffer, std::size_t size);
-    void CopyBlockUnsafe(GPUVAddr dest_addr, GPUVAddr src_addr, std::size_t size);
+    void ReadBlockUnsafe(GPUVAddr gpu_src_addr, void* dest_buffer, std::size_t size) const;
+    void WriteBlockUnsafe(GPUVAddr gpu_dest_addr, const void* src_buffer, std::size_t size);
+    void WriteBlockCached(GPUVAddr gpu_dest_addr, const void* src_buffer, std::size_t size);
+
+    /**
+     * Checks if a gpu region can be simply read with a pointer.
+     */
+    [[nodiscard]] bool IsGranularRange(GPUVAddr gpu_addr, std::size_t size) const;
+
+    /**
+     * Checks if a gpu region is mapped by a single range of device addresses.
+     */
+    [[nodiscard]] bool IsContinuousRange(GPUVAddr gpu_addr, std::size_t size) const;
+
+    /**
+     * Checks if a gpu region is mapped entirely.
+     */
+    [[nodiscard]] bool IsFullyMappedRange(GPUVAddr gpu_addr, std::size_t size) const;
+
+    /**
+     * Returns a vector with all the subranges of device addresses mapped beneath.
+     * if the region is continuous, a single pair will be returned. If it's unmapped, an empty
+     * vector will be returned;
+     */
+    boost::container::small_vector<std::pair<GPUVAddr, std::size_t>, 32> GetSubmappedRange(
+        GPUVAddr gpu_addr, std::size_t size) const;
+
+    GPUVAddr Map(GPUVAddr gpu_addr, DAddr dev_addr, std::size_t size,
+                 PTEKind kind = PTEKind::INVALID, bool is_big_pages = true);
+    GPUVAddr MapSparse(GPUVAddr gpu_addr, std::size_t size, bool is_big_pages = true);
+    void Unmap(GPUVAddr gpu_addr, std::size_t size);
+
+    void FlushRegion(GPUVAddr gpu_addr, size_t size,
+                     VideoCommon::CacheType which = VideoCommon::CacheType::All) const;
+
+    void InvalidateRegion(GPUVAddr gpu_addr, size_t size,
+                          VideoCommon::CacheType which = VideoCommon::CacheType::All) const;
+
+    bool IsMemoryDirty(GPUVAddr gpu_addr, size_t size,
+                       VideoCommon::CacheType which = VideoCommon::CacheType::All) const;
+
+    size_t MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const;
+
+    bool IsWithinGPUAddressRange(GPUVAddr gpu_addr) const {
+        return gpu_addr < address_space_size;
+    }
+
+    PTEKind GetPageKind(GPUVAddr gpu_addr) const;
+
+    size_t GetMemoryLayoutSize(GPUVAddr gpu_addr,
+                               size_t max_size = std::numeric_limits<size_t>::max()) const;
+
+    void FlushCaching();
+
+    const u8* GetSpan(const GPUVAddr src_addr, const std::size_t size) const;
+    u8* GetSpan(const GPUVAddr src_addr, const std::size_t size);
 
 private:
-    using VMAMap = std::map<GPUVAddr, VirtualMemoryArea>;
-    using VMAHandle = VMAMap::const_iterator;
-    using VMAIter = VMAMap::iterator;
+    template <bool is_big_pages, typename FuncMapped, typename FuncReserved, typename FuncUnmapped>
+    inline void MemoryOperation(GPUVAddr gpu_src_addr, std::size_t size, FuncMapped&& func_mapped,
+                                FuncReserved&& func_reserved, FuncUnmapped&& func_unmapped) const;
 
-    bool IsAddressValid(GPUVAddr addr) const;
-    void MapPages(GPUVAddr base, u64 size, u8* memory, Common::PageType type,
-                  VAddr backing_addr = 0);
-    void MapMemoryRegion(GPUVAddr base, u64 size, u8* target, VAddr backing_addr);
-    void UnmapRegion(GPUVAddr base, u64 size);
+    template <bool is_safe>
+    void ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std::size_t size,
+                       VideoCommon::CacheType which) const;
 
-    /// Finds the VMA in which the given address is included in, or `vma_map.end()`.
-    VMAHandle FindVMA(GPUVAddr target) const;
+    template <bool is_safe>
+    void WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffer, std::size_t size,
+                        VideoCommon::CacheType which);
 
-    VMAHandle AllocateMemory(GPUVAddr target, std::size_t offset, u64 size);
+    template <bool is_big_page>
+    [[nodiscard]] std::size_t PageEntryIndex(GPUVAddr gpu_addr) const {
+        if constexpr (is_big_page) {
+            return (gpu_addr >> big_page_bits) & big_page_table_mask;
+        } else {
+            return (gpu_addr >> page_bits) & page_table_mask;
+        }
+    }
 
-    /**
-     * Maps an unmanaged host memory pointer at a given address.
-     *
-     * @param target       The guest address to start the mapping at.
-     * @param memory       The memory to be mapped.
-     * @param size         Size of the mapping in bytes.
-     * @param backing_addr The base address of the range to back this mapping.
-     */
-    VMAHandle MapBackingMemory(GPUVAddr target, u8* memory, u64 size, VAddr backing_addr);
+    inline bool IsBigPageContinuous(size_t big_page_index) const;
+    inline void SetBigPageContinuous(size_t big_page_index, bool value);
 
-    /// Unmaps a range of addresses, splitting VMAs as necessary.
-    void UnmapRange(GPUVAddr target, u64 size);
-
-    /// Converts a VMAHandle to a mutable VMAIter.
-    VMAIter StripIterConstness(const VMAHandle& iter);
-
-    /// Marks as the specified VMA as allocated.
-    VMAIter Allocate(VMAIter vma);
-
-    /**
-     * Carves a VMA of a specific size at the specified address by splitting Free VMAs while doing
-     * the appropriate error checking.
-     */
-    VMAIter CarveVMA(GPUVAddr base, u64 size);
-
-    /**
-     * Splits the edges of the given range of non-Free VMAs so that there is a VMA split at each
-     * end of the range.
-     */
-    VMAIter CarveVMARange(GPUVAddr base, u64 size);
-
-    /**
-     * Splits a VMA in two, at the specified offset.
-     * @returns the right side of the split, with the original iterator becoming the left side.
-     */
-    VMAIter SplitVMA(VMAIter vma, u64 offset_in_vma);
-
-    /**
-     * Checks for and merges the specified VMA with adjacent ones if possible.
-     * @returns the merged VMA or the original if no merging was possible.
-     */
-    VMAIter MergeAdjacent(VMAIter vma);
-
-    /// Updates the pages corresponding to this VMA so they match the VMA's attributes.
-    void UpdatePageTableForVMA(const VirtualMemoryArea& vma);
-
-    /// Finds a free (unmapped region) of the specified size starting at the specified address.
-    GPUVAddr FindFreeRegion(GPUVAddr region_start, u64 size) const;
-
-private:
-    static constexpr u64 page_bits{16};
-    static constexpr u64 page_size{1 << page_bits};
-    static constexpr u64 page_mask{page_size - 1};
-
-    /// Address space in bits, according to Tegra X1 TRM
-    static constexpr u32 address_space_width{40};
-    /// Start address for mapping, this is fairly arbitrary but must be non-zero.
-    static constexpr GPUVAddr address_space_base{0x100000};
-    /// End of address space, based on address space in bits.
-    static constexpr GPUVAddr address_space_end{1ULL << address_space_width};
-
-    Common::PageTable page_table{page_bits};
-    VMAMap vma_map;
-    VideoCore::RasterizerInterface& rasterizer;
+    template <bool is_gpu_address>
+    void GetSubmappedRangeImpl(
+        GPUVAddr gpu_addr, std::size_t size,
+        boost::container::small_vector<
+            std::pair<std::conditional_t<is_gpu_address, GPUVAddr, DAddr>, std::size_t>, 32>&
+            result) const;
 
     Core::System& system;
+    MaxwellDeviceMemoryManager& memory;
+
+    const u64 address_space_bits;
+    GPUVAddr split_address;
+    const u64 page_bits;
+    u64 address_space_size;
+    u64 page_size;
+    u64 page_mask;
+    u64 page_table_mask;
+    static constexpr u64 cpu_page_bits{12};
+
+    const u64 big_page_bits;
+    u64 big_page_size;
+    u64 big_page_mask;
+    u64 big_page_table_mask;
+
+    VideoCore::RasterizerInterface* rasterizer = nullptr;
+
+    enum class EntryType : u64 {
+        Free = 0,
+        Reserved = 1,
+        Mapped = 2,
+    };
+
+    std::vector<u64> entries;
+    std::vector<u64> big_entries;
+
+    template <EntryType entry_type>
+    GPUVAddr PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr dev_addr, size_t size,
+                         PTEKind kind);
+
+    template <EntryType entry_type>
+    GPUVAddr BigPageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr dev_addr, size_t size,
+                            PTEKind kind);
+
+    template <bool is_big_page>
+    inline EntryType GetEntry(size_t position) const;
+
+    template <bool is_big_page>
+    inline void SetEntry(size_t position, EntryType entry);
+
+    Common::MultiLevelPageTable<u32> page_table;
+    Common::RangeMap<GPUVAddr, PTEKind> kind_map;
+    Common::VirtualBuffer<u32> big_page_table_dev;
+
+    std::vector<u64> big_page_continuous;
+    boost::container::small_vector<std::pair<DAddr, std::size_t>, 32> page_stash{};
+    boost::container::small_vector<std::pair<DAddr, std::size_t>, 32> page_stash2{};
+
+    mutable std::mutex guard;
+
+    static constexpr size_t continuous_bits = 64;
+
+    const size_t unique_identifier;
+    std::unique_ptr<VideoCommon::InvalidationAccumulator> accumulator;
+
+    static std::atomic<size_t> unique_identifier_generator;
+
+    Common::ScratchBuffer<u8> tmp_buffer;
 };
 
 } // namespace Tegra

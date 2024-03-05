@@ -1,6 +1,5 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
 #include <cstddef>
@@ -8,10 +7,9 @@
 #include <iterator>
 #include <utility>
 
-#include "common/file_util.h"
 #include "common/logging/log.h"
 #include "core/file_sys/partition_filesystem.h"
-#include "core/file_sys/vfs_offset.h"
+#include "core/file_sys/vfs/vfs_offset.h"
 #include "core/loader/loader.h"
 
 namespace FileSys {
@@ -21,7 +19,7 @@ bool PartitionFilesystem::Header::HasValidMagicValue() const {
            magic == Common::MakeMagic('P', 'F', 'S', '0');
 }
 
-PartitionFilesystem::PartitionFilesystem(std::shared_ptr<VfsFile> file) {
+PartitionFilesystem::PartitionFilesystem(VirtualFile file) {
     // At least be as large as the header
     if (file->GetSize() < sizeof(Header)) {
         status = Loader::ResultStatus::ErrorBadPFSHeader;
@@ -49,6 +47,7 @@ PartitionFilesystem::PartitionFilesystem(std::shared_ptr<VfsFile> file) {
     // Actually read in now...
     std::vector<u8> file_data = file->ReadBytes(metadata_size);
     const std::size_t total_size = file_data.size();
+    file_data.push_back(0);
 
     if (total_size != metadata_size) {
         status = Loader::ResultStatus::ErrorIncorrectPFSFileSize;
@@ -89,11 +88,11 @@ std::map<std::string, u64> PartitionFilesystem::GetFileSizes() const {
     return sizes;
 }
 
-std::vector<std::shared_ptr<VfsFile>> PartitionFilesystem::GetFiles() const {
+std::vector<VirtualFile> PartitionFilesystem::GetFiles() const {
     return pfs_files;
 }
 
-std::vector<std::shared_ptr<VfsDirectory>> PartitionFilesystem::GetSubdirectories() const {
+std::vector<VirtualDir> PartitionFilesystem::GetSubdirectories() const {
     return {};
 }
 
@@ -101,7 +100,7 @@ std::string PartitionFilesystem::GetName() const {
     return is_hfs ? "HFS0" : "PFS0";
 }
 
-std::shared_ptr<VfsDirectory> PartitionFilesystem::GetParentDirectory() const {
+VirtualDir PartitionFilesystem::GetParentDirectory() const {
     // TODO(DarkLordZach): Add support for nested containers.
     return nullptr;
 }

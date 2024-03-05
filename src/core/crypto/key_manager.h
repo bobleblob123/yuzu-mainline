@@ -1,24 +1,27 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <array>
+#include <filesystem>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 
 #include <variant>
-#include <boost/container/flat_map.hpp>
 #include <fmt/format.h>
 #include "common/common_funcs.h"
 #include "common/common_types.h"
 #include "core/crypto/partition_data_manager.h"
-#include "core/file_sys/vfs_types.h"
 
-namespace FileUtil {
+namespace Common::FS {
 class IOFile;
+}
+
+namespace FileSys {
+class ContentProvider;
 }
 
 namespace Loader {
@@ -26,8 +29,6 @@ enum class ResultStatus : u16;
 }
 
 namespace Core::Crypto {
-
-constexpr u64 TICKET_FILE_TITLEKEY_OFFSET = 0x180;
 
 using Key128 = std::array<u8, 0x10>;
 using Key256 = std::array<u8, 0x20>;
@@ -80,6 +81,7 @@ struct RSA4096Ticket {
     INSERT_PADDING_BYTES(0x3C);
     TicketData data;
 };
+static_assert(sizeof(RSA4096Ticket) == 0x500, "RSA4096Ticket has incorrect size.");
 
 struct RSA2048Ticket {
     SignatureType sig_type;
@@ -87,6 +89,7 @@ struct RSA2048Ticket {
     INSERT_PADDING_BYTES(0x3C);
     TicketData data;
 };
+static_assert(sizeof(RSA2048Ticket) == 0x400, "RSA2048Ticket has incorrect size.");
 
 struct ECDSATicket {
     SignatureType sig_type;
@@ -94,16 +97,41 @@ struct ECDSATicket {
     INSERT_PADDING_BYTES(0x40);
     TicketData data;
 };
+static_assert(sizeof(ECDSATicket) == 0x340, "ECDSATicket has incorrect size.");
 
 struct Ticket {
-    std::variant<RSA4096Ticket, RSA2048Ticket, ECDSATicket> data;
+    std::variant<std::monostate, RSA4096Ticket, RSA2048Ticket, ECDSATicket> data;
 
-    SignatureType GetSignatureType() const;
-    TicketData& GetData();
-    const TicketData& GetData() const;
-    u64 GetSize() const;
+    [[nodiscard]] bool IsValid() const;
+    [[nodiscard]] SignatureType GetSignatureType() const;
+    [[nodiscard]] TicketData& GetData();
+    [[nodiscard]] const TicketData& GetData() const;
+    [[nodiscard]] u64 GetSize() const;
 
+    /**
+     * Synthesizes a common ticket given a title key and rights ID.
+     *
+     * @param title_key Title key to store in the ticket.
+     * @param rights_id Rights ID the ticket is for.
+     * @return The synthesized common ticket.
+     */
     static Ticket SynthesizeCommon(Key128 title_key, const std::array<u8, 0x10>& rights_id);
+
+    /**
+     * Reads a ticket from a file.
+     *
+     * @param file File to read the ticket from.
+     * @return The read ticket. If the ticket data is invalid, Ticket::IsValid() will be false.
+     */
+    static Ticket Read(const FileSys::VirtualFile& file);
+
+    /**
+     * Reads a ticket from a memory buffer.
+     *
+     * @param raw_data Buffer to read the ticket from.
+     * @return The read ticket. If the ticket data is invalid, Ticket::IsValid() will be false.
+     */
+    static Ticket Read(std::span<const u8> raw_data);
 };
 
 static_assert(sizeof(Key128) == 16, "Key128 must be 128 bytes big.");
@@ -223,7 +251,16 @@ bool operator<(const KeyIndex<KeyType>& lhs, const KeyIndex<KeyType>& rhs) {
 
 class KeyManager {
 public:
-    KeyManager();
+    static KeyManager& Instance() {
+        static KeyManager instance;
+        return instance;
+    }
+
+    KeyManager(const KeyManager&) = delete;
+    KeyManager& operator=(const KeyManager&) = delete;
+
+    KeyManager(KeyManager&&) = delete;
+    KeyManager& operator=(KeyManager&&) = delete;
 
     bool HasKey(S128KeyType id, u64 field1 = 0, u64 field2 = 0) const;
     bool HasKey(S256KeyType id, u64 field1 = 0, u64 field2 = 0) const;
@@ -238,13 +275,13 @@ public:
 
     static bool KeyFileExists(bool title);
 
-    // Call before using the sd seed to attempt to derive it if it dosen't exist. Needs system
+    // Call before using the sd seed to attempt to derive it if it doesn't exist. Needs system
     // save 8*43 and the private file to exist.
     void DeriveSDSeedLazy();
 
     bool BaseDeriveNecessary() const;
     void DeriveBase();
-    void DeriveETicket(PartitionDataManager& data);
+    void DeriveETicket(PartitionDataManager& data, const FileSys::ContentProvider& provider);
     void PopulateTickets();
     void SynthesizeTickets();
 
@@ -253,38 +290,43 @@ public:
     const std::map<u128, Ticket>& GetCommonTickets() const;
     const std::map<u128, Ticket>& GetPersonalizedTickets() const;
 
-    bool AddTicketCommon(Ticket raw);
-    bool AddTicketPersonalized(Ticket raw);
+    bool AddTicket(const Ticket& ticket);
+
+    void ReloadKeys();
+    bool AreKeysLoaded() const;
 
 private:
+    KeyManager();
+
     std::map<KeyIndex<S128KeyType>, Key128> s128_keys;
     std::map<KeyIndex<S256KeyType>, Key256> s256_keys;
 
     // Map from rights ID to ticket
     std::map<u128, Ticket> common_tickets;
     std::map<u128, Ticket> personal_tickets;
+    bool ticket_databases_loaded = false;
 
     std::array<std::array<u8, 0xB0>, 0x20> encrypted_keyblobs{};
     std::array<std::array<u8, 0x90>, 0x20> keyblobs{};
     std::array<u8, 576> eticket_extended_kek{};
+    RSAKeyPair<2048> eticket_rsa_keypair{};
 
     bool dev_mode;
-    void LoadFromFile(const std::string& filename, bool is_title_keys);
-    void AttemptLoadKeyFile(const std::string& dir1, const std::string& dir2,
-                            const std::string& filename, bool title);
+    void LoadFromFile(const std::filesystem::path& file_path, bool is_title_keys);
+
     template <size_t Size>
     void WriteKeyToFile(KeyCategory category, std::string_view keyname,
                         const std::array<u8, Size>& key);
 
     void DeriveGeneralPurposeKeys(std::size_t crypto_revision);
 
-    RSAKeyPair<2048> GetETicketRSAKey() const;
+    void DeriveETicketRSAKey();
 
     void SetKeyWrapped(S128KeyType id, Key128 key, u64 field1 = 0, u64 field2 = 0);
     void SetKeyWrapped(S256KeyType id, Key256 key, u64 field1 = 0, u64 field2 = 0);
 
-    static const boost::container::flat_map<std::string, KeyIndex<S128KeyType>> s128_file_id;
-    static const boost::container::flat_map<std::string, KeyIndex<S256KeyType>> s256_file_id;
+    /// Parses the title key section of a ticket.
+    std::optional<Key128> ParseTicketTitleKey(const Ticket& ticket);
 };
 
 Key128 GenerateKeyEncryptionKey(Key128 source, Key128 master, Key128 kek_seed, Key128 key_seed);
@@ -297,11 +339,6 @@ std::array<u8, 0x90> DecryptKeyblob(const std::array<u8, 0xB0>& encrypted_keyblo
 std::optional<Key128> DeriveSDSeed();
 Loader::ResultStatus DeriveSDKeys(std::array<Key256, 2>& sd_keys, KeyManager& keys);
 
-std::vector<Ticket> GetTicketblob(const FileUtil::IOFile& ticket_save);
-
-// Returns a pair of {rights_id, titlekey}. Fails if the ticket has no certificate authority
-// (offset 0x140-0x144 is zero)
-std::optional<std::pair<Key128, Key128>> ParseTicket(const Ticket& ticket,
-                                                     const RSAKeyPair<2048>& eticket_extended_key);
+std::vector<Ticket> GetTicketblob(const Common::FS::IOFile& ticket_save);
 
 } // namespace Core::Crypto

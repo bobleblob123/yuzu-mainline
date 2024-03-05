@@ -1,420 +1,486 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <algorithm>
-#include <cstring>
-#include "common/assert.h"
-#include "common/file_util.h"
 #include "common/logging/log.h"
-#include "common/string_util.h"
+#include "core/hle/service/mii/mii_database_manager.h"
 #include "core/hle/service/mii/mii_manager.h"
+#include "core/hle/service/mii/mii_result.h"
+#include "core/hle/service/mii/mii_util.h"
+#include "core/hle/service/mii/types/char_info.h"
+#include "core/hle/service/mii/types/core_data.h"
+#include "core/hle/service/mii/types/raw_data.h"
+#include "core/hle/service/mii/types/store_data.h"
+#include "core/hle/service/mii/types/ver3_store_data.h"
 
 namespace Service::Mii {
+constexpr std::size_t DefaultMiiCount{RawData::DefaultMii.size()};
 
-namespace {
+MiiManager::MiiManager() {}
 
-constexpr char MII_SAVE_DATABASE_PATH[] = "/system/save/8000000000000030/MiiDatabase.dat";
-constexpr std::array<char16_t, 11> DEFAULT_MII_NAME = {u'y', u'u', u'z', u'u', u'\0'};
-
-// This value was retrieved from HW test
-constexpr MiiStoreData DEFAULT_MII = {
-    {
-        0x21, 0x40, 0x40, 0x01, 0x08, 0x01, 0x13, 0x08, 0x08, 0x02, 0x17, 0x8C, 0x06, 0x01,
-        0x69, 0x6D, 0x8A, 0x6A, 0x82, 0x14, 0x00, 0x00, 0x00, 0x20, 0x64, 0x72, 0x44, 0x44,
-    },
-    {'y', 'u', 'z', 'u', '\0'},
-    Common::UUID{1, 0},
-    0,
-    0,
-};
-
-// Default values taken from multiple real databases
-const MiiDatabase DEFAULT_MII_DATABASE{Common::MakeMagic('N', 'F', 'D', 'B'), {}, {1}, 0, 0};
-
-constexpr std::array<const char*, 4> SOURCE_NAMES{
-    "Database",
-    "Default",
-    "Account",
-    "Friend",
-};
-
-template <typename T, std::size_t SourceArraySize, std::size_t DestArraySize>
-std::array<T, DestArraySize> ResizeArray(const std::array<T, SourceArraySize>& in) {
-    std::array<T, DestArraySize> out{};
-    std::memcpy(out.data(), in.data(), sizeof(T) * std::min(SourceArraySize, DestArraySize));
-    return out;
+Result MiiManager::Initialize(DatabaseSessionMetadata& metadata) {
+    database_manager.MountSaveData();
+    database_manager.Initialize(metadata, is_broken_with_clear_flag);
+    return ResultSuccess;
 }
 
-MiiInfo ConvertStoreDataToInfo(const MiiStoreData& data) {
-    MiiStoreBitFields bf{};
-    std::memcpy(&bf, data.data.data(), sizeof(MiiStoreBitFields));
-    return {
-        data.uuid,
-        ResizeArray<char16_t, 10, 11>(data.name),
-        static_cast<u8>(bf.font_region.Value()),
-        static_cast<u8>(bf.favorite_color.Value()),
-        static_cast<u8>(bf.gender.Value()),
-        static_cast<u8>(bf.height.Value()),
-        static_cast<u8>(bf.weight.Value()),
-        static_cast<u8>(bf.mii_type.Value()),
-        static_cast<u8>(bf.mii_region.Value()),
-        static_cast<u8>(bf.face_type.Value()),
-        static_cast<u8>(bf.face_color.Value()),
-        static_cast<u8>(bf.face_wrinkle.Value()),
-        static_cast<u8>(bf.face_makeup.Value()),
-        static_cast<u8>(bf.hair_type.Value()),
-        static_cast<u8>(bf.hair_color.Value()),
-        static_cast<bool>(bf.hair_flip.Value()),
-        static_cast<u8>(bf.eye_type.Value()),
-        static_cast<u8>(bf.eye_color.Value()),
-        static_cast<u8>(bf.eye_scale.Value()),
-        static_cast<u8>(bf.eye_aspect.Value()),
-        static_cast<u8>(bf.eye_rotate.Value()),
-        static_cast<u8>(bf.eye_x.Value()),
-        static_cast<u8>(bf.eye_y.Value()),
-        static_cast<u8>(bf.eyebrow_type.Value()),
-        static_cast<u8>(bf.eyebrow_color.Value()),
-        static_cast<u8>(bf.eyebrow_scale.Value()),
-        static_cast<u8>(bf.eyebrow_aspect.Value()),
-        static_cast<u8>(bf.eyebrow_rotate.Value()),
-        static_cast<u8>(bf.eyebrow_x.Value()),
-        static_cast<u8>(bf.eyebrow_y.Value()),
-        static_cast<u8>(bf.nose_type.Value()),
-        static_cast<u8>(bf.nose_scale.Value()),
-        static_cast<u8>(bf.nose_y.Value()),
-        static_cast<u8>(bf.mouth_type.Value()),
-        static_cast<u8>(bf.mouth_color.Value()),
-        static_cast<u8>(bf.mouth_scale.Value()),
-        static_cast<u8>(bf.mouth_aspect.Value()),
-        static_cast<u8>(bf.mouth_y.Value()),
-        static_cast<u8>(bf.facial_hair_color.Value()),
-        static_cast<u8>(bf.beard_type.Value()),
-        static_cast<u8>(bf.mustache_type.Value()),
-        static_cast<u8>(bf.mustache_scale.Value()),
-        static_cast<u8>(bf.mustache_y.Value()),
-        static_cast<u8>(bf.glasses_type.Value()),
-        static_cast<u8>(bf.glasses_color.Value()),
-        static_cast<u8>(bf.glasses_scale.Value()),
-        static_cast<u8>(bf.glasses_y.Value()),
-        static_cast<u8>(bf.mole_type.Value()),
-        static_cast<u8>(bf.mole_scale.Value()),
-        static_cast<u8>(bf.mole_x.Value()),
-        static_cast<u8>(bf.mole_y.Value()),
-        0x00,
-    };
-}
-MiiStoreData ConvertInfoToStoreData(const MiiInfo& info) {
-    MiiStoreData out{};
-    out.name = ResizeArray<char16_t, 11, 10>(info.name);
-    out.uuid = info.uuid;
-
-    MiiStoreBitFields bf{};
-
-    bf.hair_type.Assign(info.hair_type);
-    bf.mole_type.Assign(info.mole_type);
-    bf.height.Assign(info.height);
-    bf.hair_flip.Assign(info.hair_flip);
-    bf.weight.Assign(info.weight);
-    bf.hair_color.Assign(info.hair_color);
-
-    bf.gender.Assign(info.gender);
-    bf.eye_color.Assign(info.eye_color);
-    bf.eyebrow_color.Assign(info.eyebrow_color);
-    bf.mouth_color.Assign(info.mouth_color);
-    bf.facial_hair_color.Assign(info.facial_hair_color);
-
-    bf.mii_type.Assign(info.mii_type);
-    bf.glasses_color.Assign(info.glasses_color);
-    bf.font_region.Assign(info.font_region);
-    bf.eye_type.Assign(info.eye_type);
-    bf.mii_region.Assign(info.mii_region);
-    bf.mouth_type.Assign(info.mouth_type);
-    bf.glasses_scale.Assign(info.glasses_scale);
-    bf.eye_y.Assign(info.eye_y);
-
-    bf.mustache_type.Assign(info.mustache_type);
-    bf.eyebrow_type.Assign(info.eyebrow_type);
-    bf.beard_type.Assign(info.beard_type);
-    bf.nose_type.Assign(info.nose_type);
-    bf.mouth_aspect.Assign(info.mouth_aspect_ratio);
-    bf.nose_y.Assign(info.nose_y);
-    bf.eyebrow_aspect.Assign(info.eyebrow_aspect_ratio);
-    bf.mouth_y.Assign(info.mouth_y);
-
-    bf.eye_rotate.Assign(info.eye_rotate);
-    bf.mustache_y.Assign(info.mustache_y);
-    bf.eye_aspect.Assign(info.eye_aspect_ratio);
-    bf.glasses_y.Assign(info.glasses_y);
-    bf.eye_scale.Assign(info.eye_scale);
-    bf.mole_x.Assign(info.mole_x);
-    bf.mole_y.Assign(info.mole_y);
-
-    bf.glasses_type.Assign(info.glasses_type);
-    bf.face_type.Assign(info.face_type);
-    bf.favorite_color.Assign(info.favorite_color);
-    bf.face_wrinkle.Assign(info.face_wrinkle);
-    bf.face_color.Assign(info.face_color);
-    bf.eye_x.Assign(info.eye_x);
-    bf.face_makeup.Assign(info.face_makeup);
-
-    bf.eyebrow_rotate.Assign(info.eyebrow_rotate);
-    bf.eyebrow_scale.Assign(info.eyebrow_scale);
-    bf.eyebrow_y.Assign(info.eyebrow_y);
-    bf.eyebrow_x.Assign(info.eyebrow_x);
-    bf.mouth_scale.Assign(info.mouth_scale);
-    bf.nose_scale.Assign(info.nose_scale);
-    bf.mole_scale.Assign(info.mole_scale);
-    bf.mustache_scale.Assign(info.mustache_scale);
-
-    std::memcpy(out.data.data(), &bf, sizeof(MiiStoreBitFields));
-
-    return out;
+void MiiManager::BuildDefault(CharInfo& out_char_info, u32 index) const {
+    StoreData store_data{};
+    store_data.BuildDefault(index);
+    out_char_info.SetFromStoreData(store_data);
 }
 
-} // namespace
-
-std::ostream& operator<<(std::ostream& os, Source source) {
-    if (static_cast<std::size_t>(source) >= SOURCE_NAMES.size()) {
-        return os << "[UNKNOWN SOURCE]";
-    }
-
-    os << SOURCE_NAMES.at(static_cast<std::size_t>(source));
-    return os;
+void MiiManager::BuildBase(CharInfo& out_char_info, Gender gender) const {
+    StoreData store_data{};
+    store_data.BuildBase(gender);
+    out_char_info.SetFromStoreData(store_data);
 }
 
-std::u16string MiiInfo::Name() const {
-    return Common::UTF16StringFromFixedZeroTerminatedBuffer(name.data(), name.size());
+void MiiManager::BuildRandom(CharInfo& out_char_info, Age age, Gender gender, Race race) const {
+    StoreData store_data{};
+    store_data.BuildRandom(age, gender, race);
+    out_char_info.SetFromStoreData(store_data);
 }
 
-bool operator==(const MiiInfo& lhs, const MiiInfo& rhs) {
-    return std::memcmp(&lhs, &rhs, sizeof(MiiInfo)) == 0;
+bool MiiManager::IsFullDatabase() const {
+    return database_manager.IsFullDatabase();
 }
 
-bool operator!=(const MiiInfo& lhs, const MiiInfo& rhs) {
-    return !operator==(lhs, rhs);
+void MiiManager::SetInterfaceVersion(DatabaseSessionMetadata& metadata, u32 version) const {
+    metadata.interface_version = version;
 }
 
-std::u16string MiiStoreData::Name() const {
-    return Common::UTF16StringFromFixedZeroTerminatedBuffer(name.data(), name.size());
-}
-
-MiiManager::MiiManager() = default;
-
-MiiManager::~MiiManager() = default;
-
-MiiInfo MiiManager::CreateRandom(RandomParameters params) {
-    LOG_WARNING(Service_Mii,
-                "(STUBBED) called with params={:08X}{:08X}{:08X}, returning default Mii",
-                params.unknown_1, params.unknown_2, params.unknown_3);
-
-    return ConvertStoreDataToInfo(CreateMiiWithUniqueUUID());
-}
-
-MiiInfo MiiManager::CreateDefault(u32 index) {
-    const auto new_mii = CreateMiiWithUniqueUUID();
-
-    database.miis.at(index) = new_mii;
-
-    EnsureDatabasePartition();
-    return ConvertStoreDataToInfo(new_mii);
-}
-
-bool MiiManager::CheckUpdatedFlag() const {
-    return updated_flag;
-}
-
-void MiiManager::ResetUpdatedFlag() {
-    updated_flag = false;
-}
-
-bool MiiManager::IsTestModeEnabled() const {
-    return is_test_mode_enabled;
-}
-
-bool MiiManager::Empty() const {
-    return Size() == 0;
-}
-
-bool MiiManager::Full() const {
-    return Size() == MAX_MIIS;
-}
-
-void MiiManager::Clear() {
-    updated_flag = true;
-    std::fill(database.miis.begin(), database.miis.end(), MiiStoreData{});
-}
-
-u32 MiiManager::Size() const {
-    return static_cast<u32>(std::count_if(database.miis.begin(), database.miis.end(),
-                                          [](const MiiStoreData& elem) { return elem.uuid; }));
-}
-
-MiiInfo MiiManager::GetInfo(u32 index) const {
-    return ConvertStoreDataToInfo(GetStoreData(index));
-}
-
-MiiInfoElement MiiManager::GetInfoElement(u32 index) const {
-    return {GetInfo(index), Source::Database};
-}
-
-MiiStoreData MiiManager::GetStoreData(u32 index) const {
-    return database.miis.at(index);
-}
-
-MiiStoreDataElement MiiManager::GetStoreDataElement(u32 index) const {
-    return {GetStoreData(index), Source::Database};
-}
-
-bool MiiManager::Remove(Common::UUID uuid) {
-    const auto iter = std::find_if(database.miis.begin(), database.miis.end(),
-                                   [uuid](const MiiStoreData& elem) { return elem.uuid == uuid; });
-
-    if (iter == database.miis.end())
+bool MiiManager::IsUpdated(DatabaseSessionMetadata& metadata, SourceFlag source_flag) const {
+    if ((source_flag & SourceFlag::Database) == SourceFlag::None) {
         return false;
-
-    updated_flag = true;
-    *iter = MiiStoreData{};
-    EnsureDatabasePartition();
-    return true;
-}
-
-u32 MiiManager::IndexOf(Common::UUID uuid) const {
-    const auto iter = std::find_if(database.miis.begin(), database.miis.end(),
-                                   [uuid](const MiiStoreData& elem) { return elem.uuid == uuid; });
-
-    if (iter == database.miis.end())
-        return INVALID_INDEX;
-
-    return static_cast<u32>(std::distance(database.miis.begin(), iter));
-}
-
-u32 MiiManager::IndexOf(const MiiInfo& info) const {
-    const auto iter =
-        std::find_if(database.miis.begin(), database.miis.end(), [&info](const MiiStoreData& elem) {
-            return ConvertStoreDataToInfo(elem) == info;
-        });
-
-    if (iter == database.miis.end())
-        return INVALID_INDEX;
-
-    return static_cast<u32>(std::distance(database.miis.begin(), iter));
-}
-
-bool MiiManager::Move(Common::UUID uuid, u32 new_index) {
-    const auto index = IndexOf(uuid);
-
-    if (index == INVALID_INDEX || new_index >= MAX_MIIS)
-        return false;
-
-    updated_flag = true;
-    const auto moving = database.miis[index];
-    const auto replacing = database.miis[new_index];
-    if (replacing.uuid) {
-        database.miis[index] = replacing;
-        database.miis[new_index] = moving;
-    } else {
-        database.miis[index] = MiiStoreData{};
-        database.miis[new_index] = moving;
     }
 
-    EnsureDatabasePartition();
-    return true;
+    const u64 metadata_update_counter = metadata.update_counter;
+    const u64 database_update_counter = database_manager.GetUpdateCounter();
+    metadata.update_counter = database_update_counter;
+    return metadata_update_counter != database_update_counter;
 }
 
-bool MiiManager::AddOrReplace(const MiiStoreData& data) {
-    const auto index = IndexOf(data.uuid);
+u32 MiiManager::GetCount(const DatabaseSessionMetadata& metadata, SourceFlag source_flag) const {
+    u32 mii_count{};
+    if ((source_flag & SourceFlag::Default) != SourceFlag::None) {
+        mii_count += DefaultMiiCount;
+    }
+    if ((source_flag & SourceFlag::Database) != SourceFlag::None) {
+        mii_count += database_manager.GetCount(metadata);
+    }
+    return mii_count;
+}
 
-    updated_flag = true;
-    if (index == INVALID_INDEX) {
-        const auto size = Size();
-        if (size == MAX_MIIS)
-            return false;
-        database.miis[size] = data;
-    } else {
-        database.miis[index] = data;
+Result MiiManager::Move(DatabaseSessionMetadata& metadata, u32 index,
+                        const Common::UUID& create_id) {
+    const auto result = database_manager.Move(metadata, index, create_id);
+
+    if (result.IsFailure()) {
+        return result;
     }
 
-    return true;
-}
-
-bool MiiManager::DestroyFile() {
-    database = DEFAULT_MII_DATABASE;
-    updated_flag = false;
-    return DeleteFile();
-}
-
-bool MiiManager::DeleteFile() {
-    const auto path = FileUtil::GetUserPath(FileUtil::UserPath::NANDDir) + MII_SAVE_DATABASE_PATH;
-    return FileUtil::Exists(path) && FileUtil::Delete(path);
-}
-
-void MiiManager::WriteToFile() {
-    const auto raw_path =
-        FileUtil::GetUserPath(FileUtil::UserPath::NANDDir) + "/system/save/8000000000000030";
-    if (FileUtil::Exists(raw_path) && !FileUtil::IsDirectory(raw_path))
-        FileUtil::Delete(raw_path);
-
-    const auto path = FileUtil::GetUserPath(FileUtil::UserPath::NANDDir) + MII_SAVE_DATABASE_PATH;
-
-    if (!FileUtil::CreateFullPath(path)) {
-        LOG_WARNING(Service_Mii,
-                    "Failed to create full path of MiiDatabase.dat. Create the directory "
-                    "nand/system/save/8000000000000030 to mitigate this "
-                    "issue.");
-        return;
+    if (!database_manager.IsModified()) {
+        return ResultNotUpdated;
     }
 
-    FileUtil::IOFile save(path, "wb");
-
-    if (!save.IsOpen()) {
-        LOG_WARNING(Service_Mii, "Failed to write save data to file... No changes to user data "
-                                 "made in current session will be saved.");
-        return;
-    }
-
-    save.Resize(sizeof(MiiDatabase));
-    if (save.WriteBytes(&database, sizeof(MiiDatabase)) != sizeof(MiiDatabase)) {
-        LOG_WARNING(Service_Mii, "Failed to write all data to save file... Data may be malformed "
-                                 "and/or regenerated on next run.");
-        save.Resize(0);
-    }
+    return database_manager.SaveDatabase();
 }
 
-void MiiManager::ReadFromFile() {
-    FileUtil::IOFile save(
-        FileUtil::GetUserPath(FileUtil::UserPath::NANDDir) + MII_SAVE_DATABASE_PATH, "rb");
+Result MiiManager::AddOrReplace(DatabaseSessionMetadata& metadata, const StoreData& store_data) {
+    const auto result = database_manager.AddOrReplace(metadata, store_data);
 
-    if (!save.IsOpen()) {
-        LOG_WARNING(Service_ACC, "Failed to load profile data from save data... Generating new "
-                                 "blank Mii database with no Miis.");
-        std::memcpy(&database, &DEFAULT_MII_DATABASE, sizeof(MiiDatabase));
-        return;
+    if (result.IsFailure()) {
+        return result;
     }
 
-    if (save.ReadBytes(&database, sizeof(MiiDatabase)) != sizeof(MiiDatabase)) {
-        LOG_WARNING(Service_ACC, "MiiDatabase.dat is smaller than expected... Generating new blank "
-                                 "Mii database with no Miis.");
-        std::memcpy(&database, &DEFAULT_MII_DATABASE, sizeof(MiiDatabase));
-        return;
+    if (!database_manager.IsModified()) {
+        return ResultNotUpdated;
     }
 
-    EnsureDatabasePartition();
+    return database_manager.SaveDatabase();
 }
 
-MiiStoreData MiiManager::CreateMiiWithUniqueUUID() const {
-    auto new_mii = DEFAULT_MII;
+Result MiiManager::Delete(DatabaseSessionMetadata& metadata, const Common::UUID& create_id) {
+    const auto result = database_manager.Delete(metadata, create_id);
 
-    do {
-        new_mii.uuid = Common::UUID::Generate();
-    } while (IndexOf(new_mii.uuid) != INVALID_INDEX);
+    if (result.IsFailure()) {
+        return result;
+    }
 
-    return new_mii;
+    if (!database_manager.IsModified()) {
+        return ResultNotUpdated;
+    }
+
+    return database_manager.SaveDatabase();
 }
 
-void MiiManager::EnsureDatabasePartition() {
-    std::stable_partition(database.miis.begin(), database.miis.end(),
-                          [](const MiiStoreData& elem) { return elem.uuid; });
+s32 MiiManager::FindIndex(const Common::UUID& create_id, bool is_special) const {
+    s32 index{};
+    const auto result = database_manager.FindIndex(index, create_id, is_special);
+    if (result.IsError()) {
+        index = -1;
+    }
+    return index;
+}
+
+Result MiiManager::GetIndex(const DatabaseSessionMetadata& metadata, const CharInfo& char_info,
+                            s32& out_index) const {
+    if (char_info.Verify() != ValidationResult::NoErrors) {
+        return ResultInvalidCharInfo;
+    }
+
+    s32 index{};
+    const bool is_special = metadata.magic == MiiMagic;
+    const auto result = database_manager.FindIndex(index, char_info.GetCreateId(), is_special);
+
+    if (result.IsError()) {
+        index = -1;
+    }
+
+    if (index == -1) {
+        return ResultNotFound;
+    }
+
+    out_index = index;
+    return ResultSuccess;
+}
+
+Result MiiManager::Append(DatabaseSessionMetadata& metadata, const CharInfo& char_info) {
+    const auto result = database_manager.Append(metadata, char_info);
+
+    if (result.IsError()) {
+        return ResultNotFound;
+    }
+
+    if (!database_manager.IsModified()) {
+        return ResultNotUpdated;
+    }
+
+    return database_manager.SaveDatabase();
+}
+
+bool MiiManager::IsBrokenWithClearFlag(DatabaseSessionMetadata& metadata) {
+    const bool is_broken = is_broken_with_clear_flag;
+    if (is_broken_with_clear_flag) {
+        is_broken_with_clear_flag = false;
+        database_manager.Format(metadata);
+        database_manager.SaveDatabase();
+    }
+    return is_broken;
+}
+
+Result MiiManager::DestroyFile(DatabaseSessionMetadata& metadata) {
+    is_broken_with_clear_flag = true;
+    return database_manager.DestroyFile(metadata);
+}
+
+Result MiiManager::DeleteFile() {
+    return database_manager.DeleteFile();
+}
+
+Result MiiManager::Format(DatabaseSessionMetadata& metadata) {
+    database_manager.Format(metadata);
+
+    if (!database_manager.IsModified()) {
+        return ResultNotUpdated;
+    }
+    return database_manager.SaveDatabase();
+}
+
+Result MiiManager::ConvertV3ToCharInfo(CharInfo& out_char_info, const Ver3StoreData& mii_v3) const {
+    if (!mii_v3.IsValid()) {
+        return ResultInvalidCharInfo;
+    }
+
+    StoreData store_data{};
+    mii_v3.BuildToStoreData(store_data);
+    const auto name = store_data.GetNickname();
+    if (!MiiUtil::IsFontRegionValid(store_data.GetFontRegion(), name.data)) {
+        store_data.SetInvalidName();
+    }
+
+    out_char_info.SetFromStoreData(store_data);
+    return ResultSuccess;
+}
+
+Result MiiManager::ConvertCoreDataToCharInfo(CharInfo& out_char_info,
+                                             const CoreData& core_data) const {
+    if (core_data.IsValid() != ValidationResult::NoErrors) {
+        return ResultInvalidCharInfo;
+    }
+
+    StoreData store_data{};
+    store_data.BuildWithCoreData(core_data);
+    const auto name = store_data.GetNickname();
+    if (!MiiUtil::IsFontRegionValid(store_data.GetFontRegion(), name.data)) {
+        store_data.SetInvalidName();
+    }
+
+    out_char_info.SetFromStoreData(store_data);
+    return ResultSuccess;
+}
+
+Result MiiManager::ConvertCharInfoToCoreData(CoreData& out_core_data,
+                                             const CharInfo& char_info) const {
+    if (char_info.Verify() != ValidationResult::NoErrors) {
+        return ResultInvalidCharInfo;
+    }
+
+    out_core_data.BuildFromCharInfo(char_info);
+    const auto name = out_core_data.GetNickname();
+    if (!MiiUtil::IsFontRegionValid(out_core_data.GetFontRegion(), name.data)) {
+        out_core_data.SetNickname(out_core_data.GetInvalidNickname());
+    }
+
+    return ResultSuccess;
+}
+
+Result MiiManager::UpdateLatest(const DatabaseSessionMetadata& metadata, CharInfo& out_char_info,
+                                const CharInfo& char_info, SourceFlag source_flag) const {
+    if ((source_flag & SourceFlag::Database) == SourceFlag::None) {
+        return ResultNotFound;
+    }
+
+    if (metadata.IsInterfaceVersionSupported(1)) {
+        if (char_info.Verify() != ValidationResult::NoErrors) {
+            return ResultInvalidCharInfo;
+        }
+    }
+
+    u32 index{};
+    Result result = database_manager.FindIndex(metadata, index, char_info.GetCreateId());
+
+    if (result.IsError()) {
+        return result;
+    }
+
+    StoreData store_data{};
+    database_manager.Get(store_data, index, metadata);
+
+    if (store_data.GetType() != char_info.GetType()) {
+        return ResultNotFound;
+    }
+
+    out_char_info.SetFromStoreData(store_data);
+
+    if (char_info == out_char_info) {
+        return ResultNotUpdated;
+    }
+
+    return ResultSuccess;
+}
+
+Result MiiManager::UpdateLatest(const DatabaseSessionMetadata& metadata, StoreData& out_store_data,
+                                const StoreData& store_data, SourceFlag source_flag) const {
+    if ((source_flag & SourceFlag::Database) == SourceFlag::None) {
+        return ResultNotFound;
+    }
+
+    if (metadata.IsInterfaceVersionSupported(1)) {
+        if (store_data.IsValid() != ValidationResult::NoErrors) {
+            return ResultInvalidCharInfo;
+        }
+    }
+
+    u32 index{};
+    Result result = database_manager.FindIndex(metadata, index, store_data.GetCreateId());
+
+    if (result.IsError()) {
+        return result;
+    }
+
+    database_manager.Get(out_store_data, index, metadata);
+
+    if (out_store_data.GetType() != store_data.GetType()) {
+        return ResultNotFound;
+    }
+
+    if (store_data == out_store_data) {
+        return ResultNotUpdated;
+    }
+
+    return ResultSuccess;
+}
+
+Result MiiManager::Get(const DatabaseSessionMetadata& metadata,
+                       std::span<CharInfoElement> out_elements, u32& out_count,
+                       SourceFlag source_flag) const {
+    if ((source_flag & SourceFlag::Database) == SourceFlag::None) {
+        return BuildDefault(out_elements, out_count, source_flag);
+    }
+
+    const auto mii_count = database_manager.GetCount(metadata);
+
+    for (std::size_t index = 0; index < mii_count; ++index) {
+        if (out_elements.size() <= static_cast<std::size_t>(out_count)) {
+            return ResultInvalidArgumentSize;
+        }
+
+        StoreData store_data{};
+        database_manager.Get(store_data, index, metadata);
+
+        out_elements[out_count].source = Source::Database;
+        out_elements[out_count].char_info.SetFromStoreData(store_data);
+        out_count++;
+    }
+
+    // Include default Mii at the end of the list
+    return BuildDefault(out_elements, out_count, source_flag);
+}
+
+Result MiiManager::Get(const DatabaseSessionMetadata& metadata, std::span<CharInfo> out_char_info,
+                       u32& out_count, SourceFlag source_flag) const {
+    if ((source_flag & SourceFlag::Database) == SourceFlag::None) {
+        return BuildDefault(out_char_info, out_count, source_flag);
+    }
+
+    const auto mii_count = database_manager.GetCount(metadata);
+
+    for (std::size_t index = 0; index < mii_count; ++index) {
+        if (out_char_info.size() <= static_cast<std::size_t>(out_count)) {
+            return ResultInvalidArgumentSize;
+        }
+
+        StoreData store_data{};
+        database_manager.Get(store_data, index, metadata);
+
+        out_char_info[out_count].SetFromStoreData(store_data);
+        out_count++;
+    }
+
+    // Include default Mii at the end of the list
+    return BuildDefault(out_char_info, out_count, source_flag);
+}
+
+Result MiiManager::Get(const DatabaseSessionMetadata& metadata,
+                       std::span<StoreDataElement> out_elements, u32& out_count,
+                       SourceFlag source_flag) const {
+    if ((source_flag & SourceFlag::Database) == SourceFlag::None) {
+        return BuildDefault(out_elements, out_count, source_flag);
+    }
+
+    const auto mii_count = database_manager.GetCount(metadata);
+
+    for (std::size_t index = 0; index < mii_count; ++index) {
+        if (out_elements.size() <= static_cast<std::size_t>(out_count)) {
+            return ResultInvalidArgumentSize;
+        }
+
+        StoreData store_data{};
+        database_manager.Get(store_data, index, metadata);
+
+        out_elements[out_count].store_data = store_data;
+        out_elements[out_count].source = Source::Database;
+        out_count++;
+    }
+
+    // Include default Mii at the end of the list
+    return BuildDefault(out_elements, out_count, source_flag);
+}
+
+Result MiiManager::Get(const DatabaseSessionMetadata& metadata, std::span<StoreData> out_store_data,
+                       u32& out_count, SourceFlag source_flag) const {
+    if ((source_flag & SourceFlag::Database) == SourceFlag::None) {
+        return BuildDefault(out_store_data, out_count, source_flag);
+    }
+
+    const auto mii_count = database_manager.GetCount(metadata);
+
+    for (std::size_t index = 0; index < mii_count; ++index) {
+        if (out_store_data.size() <= static_cast<std::size_t>(out_count)) {
+            return ResultInvalidArgumentSize;
+        }
+
+        StoreData store_data{};
+        database_manager.Get(store_data, index, metadata);
+
+        out_store_data[out_count] = store_data;
+        out_count++;
+    }
+
+    // Include default Mii at the end of the list
+    return BuildDefault(out_store_data, out_count, source_flag);
+}
+Result MiiManager::BuildDefault(std::span<CharInfoElement> out_elements, u32& out_count,
+                                SourceFlag source_flag) const {
+    if ((source_flag & SourceFlag::Default) == SourceFlag::None) {
+        return ResultSuccess;
+    }
+
+    StoreData store_data{};
+
+    for (std::size_t index = 0; index < DefaultMiiCount; ++index) {
+        if (out_elements.size() <= static_cast<std::size_t>(out_count)) {
+            return ResultInvalidArgumentSize;
+        }
+
+        store_data.BuildDefault(static_cast<u32>(index));
+
+        out_elements[out_count].source = Source::Default;
+        out_elements[out_count].char_info.SetFromStoreData(store_data);
+        out_count++;
+    }
+
+    return ResultSuccess;
+}
+
+Result MiiManager::BuildDefault(std::span<CharInfo> out_char_info, u32& out_count,
+                                SourceFlag source_flag) const {
+    if ((source_flag & SourceFlag::Default) == SourceFlag::None) {
+        return ResultSuccess;
+    }
+
+    StoreData store_data{};
+
+    for (std::size_t index = 0; index < DefaultMiiCount; ++index) {
+        if (out_char_info.size() <= static_cast<std::size_t>(out_count)) {
+            return ResultInvalidArgumentSize;
+        }
+
+        store_data.BuildDefault(static_cast<u32>(index));
+
+        out_char_info[out_count].SetFromStoreData(store_data);
+        out_count++;
+    }
+
+    return ResultSuccess;
+}
+
+Result MiiManager::BuildDefault(std::span<StoreDataElement> out_elements, u32& out_count,
+                                SourceFlag source_flag) const {
+    if ((source_flag & SourceFlag::Default) == SourceFlag::None) {
+        return ResultSuccess;
+    }
+
+    for (std::size_t index = 0; index < DefaultMiiCount; ++index) {
+        if (out_elements.size() <= static_cast<std::size_t>(out_count)) {
+            return ResultInvalidArgumentSize;
+        }
+
+        out_elements[out_count].store_data.BuildDefault(static_cast<u32>(index));
+        out_elements[out_count].source = Source::Default;
+        out_count++;
+    }
+
+    return ResultSuccess;
+}
+
+Result MiiManager::BuildDefault(std::span<StoreData> out_char_info, u32& out_count,
+                                SourceFlag source_flag) const {
+    if ((source_flag & SourceFlag::Default) == SourceFlag::None) {
+        return ResultSuccess;
+    }
+
+    for (std::size_t index = 0; index < DefaultMiiCount; ++index) {
+        if (out_char_info.size() <= static_cast<std::size_t>(out_count)) {
+            return ResultInvalidArgumentSize;
+        }
+
+        out_char_info[out_count].BuildDefault(static_cast<u32>(index));
+        out_count++;
+    }
+
+    return ResultSuccess;
 }
 
 } // namespace Service::Mii

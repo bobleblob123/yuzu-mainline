@@ -1,42 +1,31 @@
-// Copyright 2015 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2015 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <array>
-#include <atomic>
 #include <cstddef>
-#include <map>
-#include <memory>
-#include <mutex>
 #include <optional>
-#include <tuple>
-#include <utility>
 
-#include <boost/icl/interval_map.hpp>
+#include <boost/container/static_vector.hpp>
+
 #include <glad/glad.h>
 
 #include "common/common_types.h"
-#include "video_core/engines/const_buffer_info.h"
-#include "video_core/engines/maxwell_3d.h"
-#include "video_core/rasterizer_cache.h"
+#include "video_core/control/channel_state_cache.h"
+#include "video_core/engines/maxwell_dma.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/renderer_opengl/blit_image.h"
+#include "video_core/renderer_opengl/gl_blit_screen.h"
 #include "video_core/renderer_opengl/gl_buffer_cache.h"
 #include "video_core/renderer_opengl/gl_device.h"
-#include "video_core/renderer_opengl/gl_framebuffer_cache.h"
-#include "video_core/renderer_opengl/gl_resource_manager.h"
-#include "video_core/renderer_opengl/gl_sampler_cache.h"
+#include "video_core/renderer_opengl/gl_fence_manager.h"
+#include "video_core/renderer_opengl/gl_query_cache.h"
 #include "video_core/renderer_opengl/gl_shader_cache.h"
-#include "video_core/renderer_opengl/gl_shader_decompiler.h"
-#include "video_core/renderer_opengl/gl_shader_manager.h"
-#include "video_core/renderer_opengl/gl_state.h"
 #include "video_core/renderer_opengl/gl_texture_cache.h"
-#include "video_core/renderer_opengl/utils.h"
-#include "video_core/textures/texture.h"
 
-namespace Core {
-class System;
+namespace Core::Memory {
+class Memory;
 }
 
 namespace Core::Frontend {
@@ -49,91 +38,134 @@ class MemoryManager;
 
 namespace OpenGL {
 
-struct ScreenInfo;
-struct DrawParameters;
+struct FramebufferTextureInfo;
+struct ShaderEntries;
 
-class RasterizerOpenGL : public VideoCore::RasterizerInterface {
+struct BindlessSSBO {
+    GLuint64EXT address;
+    GLsizei length;
+    GLsizei padding;
+};
+static_assert(sizeof(BindlessSSBO) * CHAR_BIT == 128);
+
+class AccelerateDMA : public Tegra::Engines::AccelerateDMAInterface {
 public:
-    explicit RasterizerOpenGL(Core::System& system, Core::Frontend::EmuWindow& emu_window,
-                              ScreenInfo& info);
-    ~RasterizerOpenGL() override;
+    explicit AccelerateDMA(BufferCache& buffer_cache, TextureCache& texture_cache);
 
-    bool DrawBatch(bool is_indexed) override;
-    bool DrawMultiBatch(bool is_indexed) override;
-    void Clear() override;
-    void DispatchCompute(GPUVAddr code_addr) override;
-    void FlushAll() override;
-    void FlushRegion(CacheAddr addr, u64 size) override;
-    void InvalidateRegion(CacheAddr addr, u64 size) override;
-    void FlushAndInvalidateRegion(CacheAddr addr, u64 size) override;
-    void FlushCommands() override;
-    void TickFrame() override;
-    bool AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Regs::Surface& src,
-                               const Tegra::Engines::Fermi2D::Regs::Surface& dst,
-                               const Tegra::Engines::Fermi2D::Config& copy_config) override;
-    bool AccelerateDisplay(const Tegra::FramebufferConfig& config, VAddr framebuffer_addr,
-                           u32 pixel_stride) override;
-    void UpdatePagesCachedCount(VAddr addr, u64 size, int delta) override;
-    void LoadDiskResources(const std::atomic_bool& stop_loading,
-                           const VideoCore::DiskResourceLoadCallback& callback) override;
+    bool BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount) override;
+
+    bool BufferClear(GPUVAddr src_address, u64 amount, u32 value) override;
+
+    bool ImageToBuffer(const Tegra::DMA::ImageCopy& copy_info, const Tegra::DMA::ImageOperand& src,
+                       const Tegra::DMA::BufferOperand& dst) override;
+
+    bool BufferToImage(const Tegra::DMA::ImageCopy& copy_info, const Tegra::DMA::BufferOperand& src,
+                       const Tegra::DMA::ImageOperand& dst) override;
 
 private:
-    /// Configures the color and depth framebuffer states.
-    void ConfigureFramebuffers();
+    template <bool IS_IMAGE_UPLOAD>
+    bool DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
+                            const Tegra::DMA::BufferOperand& src,
+                            const Tegra::DMA::ImageOperand& dst);
 
-    void ConfigureClearFramebuffer(OpenGLState& current_state, bool using_color_fb,
-                                   bool using_depth_fb, bool using_stencil_fb);
+    BufferCache& buffer_cache;
+    TextureCache& texture_cache;
+};
 
-    /// Configures the current constbuffers to use for the draw command.
-    void SetupDrawConstBuffers(Tegra::Engines::Maxwell3D::Regs::ShaderStage stage,
-                               const Shader& shader);
+class RasterizerOpenGL : public VideoCore::RasterizerInterface,
+                         protected VideoCommon::ChannelSetupCaches<VideoCommon::ChannelInfo> {
+public:
+    explicit RasterizerOpenGL(Core::Frontend::EmuWindow& emu_window_, Tegra::GPU& gpu_,
+                              Tegra::MaxwellDeviceMemoryManager& device_memory_,
+                              const Device& device_, ProgramManager& program_manager_,
+                              StateTracker& state_tracker_);
+    ~RasterizerOpenGL() override;
 
-    /// Configures the current constbuffers to use for the kernel invocation.
-    void SetupComputeConstBuffers(const Shader& kernel);
+    void Draw(bool is_indexed, u32 instance_count) override;
+    void DrawIndirect() override;
+    void DrawTexture() override;
+    void Clear(u32 layer_count) override;
+    void DispatchCompute() override;
+    void ResetCounter(VideoCommon::QueryType type) override;
+    void Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
+               VideoCommon::QueryPropertiesFlags flags, u32 payload, u32 subreport) override;
+    void BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr, u32 size) override;
+    void DisableGraphicsUniformBuffer(size_t stage, u32 index) override;
+    void FlushAll() override;
+    void FlushRegion(DAddr addr, u64 size,
+                     VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
+    bool MustFlushRegion(DAddr addr, u64 size,
+                         VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
+    VideoCore::RasterizerDownloadArea GetFlushArea(PAddr addr, u64 size) override;
+    void InvalidateRegion(DAddr addr, u64 size,
+                          VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
+    void OnCacheInvalidation(PAddr addr, u64 size) override;
+    bool OnCPUWrite(PAddr addr, u64 size) override;
+    void InvalidateGPUCache() override;
+    void UnmapMemory(DAddr addr, u64 size) override;
+    void ModifyGPUMemory(size_t as_id, GPUVAddr addr, u64 size) override;
+    void SignalFence(std::function<void()>&& func) override;
+    void SyncOperation(std::function<void()>&& func) override;
+    void SignalSyncPoint(u32 value) override;
+    void SignalReference() override;
+    void ReleaseFences(bool force = true) override;
+    void FlushAndInvalidateRegion(
+        DAddr addr, u64 size, VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
+    void WaitForIdle() override;
+    void FragmentBarrier() override;
+    void TiledCacheBarrier() override;
+    void FlushCommands() override;
+    void TickFrame() override;
+    bool AccelerateConditionalRendering() override;
+    bool AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
+                               const Tegra::Engines::Fermi2D::Surface& dst,
+                               const Tegra::Engines::Fermi2D::Config& copy_config) override;
+    Tegra::Engines::AccelerateDMAInterface& AccessAccelerateDMA() override;
+    void AccelerateInlineToMemory(GPUVAddr address, size_t copy_size,
+                                  std::span<const u8> memory) override;
+    void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
+                           const VideoCore::DiskResourceLoadCallback& callback) override;
 
-    /// Configures a constant buffer.
-    void SetupConstBuffer(const Tegra::Engines::ConstBufferInfo& buffer,
-                          const GLShader::ConstBufferEntry& entry);
+    /// Returns true when there are commands queued to the OpenGL server.
+    bool AnyCommandQueued() const {
+        return num_queued_commands > 0;
+    }
 
-    /// Configures the current global memory entries to use for the draw command.
-    void SetupDrawGlobalMemory(Tegra::Engines::Maxwell3D::Regs::ShaderStage stage,
-                               const Shader& shader);
+    void InitializeChannel(Tegra::Control::ChannelState& channel) override;
 
-    /// Configures the current global memory entries to use for the kernel invocation.
-    void SetupComputeGlobalMemory(const Shader& kernel);
+    void BindChannel(Tegra::Control::ChannelState& channel) override;
 
-    /// Configures a constant buffer.
-    void SetupGlobalMemory(const GLShader::GlobalMemoryEntry& entry, GPUVAddr gpu_addr,
-                           std::size_t size);
+    void ReleaseChannel(s32 channel_id) override;
 
-    /// Syncs all the state, shaders, render targets and textures setting before a draw call.
-    void DrawPrelude();
+    void RegisterTransformFeedback(GPUVAddr tfb_object_addr) override;
 
-    /// Configures the current textures to use for the draw command. Returns shaders texture buffer
-    /// usage.
-    TextureBufferUsage SetupDrawTextures(Tegra::Engines::Maxwell3D::Regs::ShaderStage stage,
-                                         const Shader& shader, BaseBindings base_bindings);
+    bool HasDrawTransformFeedback() override {
+        return true;
+    }
 
-    /// Configures the textures used in a compute shader. Returns texture buffer usage.
-    TextureBufferUsage SetupComputeTextures(const Shader& kernel);
+    std::optional<FramebufferTextureInfo> AccelerateDisplay(const Tegra::FramebufferConfig& config,
+                                                            VAddr framebuffer_addr,
+                                                            u32 pixel_stride);
 
-    /// Configures a texture. Returns true when the texture is a texture buffer.
-    bool SetupTexture(u32 binding, const Tegra::Texture::FullTextureInfo& texture,
-                      const GLShader::SamplerEntry& entry);
+private:
+    static constexpr size_t MAX_TEXTURES = 192;
+    static constexpr size_t MAX_IMAGES = 48;
+    static constexpr size_t MAX_IMAGE_VIEWS = MAX_TEXTURES + MAX_IMAGES;
 
-    /// Configures images in a compute shader.
-    void SetupComputeImages(const Shader& shader);
+    template <typename Func>
+    void PrepareDraw(bool is_indexed, Func&&);
 
-    /// Configures an image.
-    void SetupImage(u32 binding, const Tegra::Texture::TICEntry& tic,
-                    const GLShader::ImageEntry& entry);
+    /// Syncs state to match guest's
+    void SyncState();
 
     /// Syncs the viewport and depth range to match the guest state
-    void SyncViewport(OpenGLState& current_state);
+    void SyncViewport();
+
+    /// Syncs the depth clamp state
+    void SyncDepthClamp();
 
     /// Syncs the clip enabled status to match the guest state
-    void SyncClipEnabled(
-        const std::array<bool, Tegra::Engines::Maxwell3D::Regs::NumClipDistances>& clip_mask);
+    void SyncClipEnabled(u32 clip_mask);
 
     /// Syncs the clip coefficients to match the guest state
     void SyncClipCoef();
@@ -141,7 +173,7 @@ private:
     /// Syncs the cull mode to match the guest state
     void SyncCullMode();
 
-    /// Syncs the primitve restart to match the guest state
+    /// Syncs the primitive restart to match the guest state
     void SyncPrimitiveRestart();
 
     /// Syncs the depth test state to match the guest state
@@ -163,13 +195,19 @@ private:
     void SyncMultiSampleState();
 
     /// Syncs the scissor test state to match the guest state
-    void SyncScissorTest(OpenGLState& current_state);
-
-    /// Syncs the transform feedback state to match the guest state
-    void SyncTransformFeedback();
+    void SyncScissorTest();
 
     /// Syncs the point state to match the guest state
     void SyncPointState();
+
+    /// Syncs the line state to match the guest state
+    void SyncLineState();
+
+    /// Syncs the rasterizer enable state to match the guest state
+    void SyncRasterizeEnable();
+
+    /// Syncs polygon modes to match the guest state
+    void SyncPolygonModes();
 
     /// Syncs Color Mask
     void SyncColorMask();
@@ -180,59 +218,54 @@ private:
     /// Syncs the alpha test state to match the guest state
     void SyncAlphaTest();
 
-    /// Check for extension that are not strictly required
-    /// but are needed for correct emulation
-    void CheckExtensions();
+    /// Syncs the framebuffer sRGB state to match the guest state
+    void SyncFramebufferSRGB();
 
-    const Device device;
-    OpenGLState state;
+    /// Syncs vertex formats to match the guest state
+    void SyncVertexFormats();
 
-    TextureCacheOpenGL texture_cache;
-    ShaderCacheOpenGL shader_cache;
-    SamplerCacheOpenGL sampler_cache;
-    FramebufferCacheOpenGL framebuffer_cache;
+    /// Syncs vertex instances to match the guest state
+    void SyncVertexInstances();
 
-    Core::System& system;
-    ScreenInfo& screen_info;
+    /// Begin a transform feedback
+    void BeginTransformFeedback(GraphicsPipeline* pipeline, GLenum primitive_mode);
 
-    std::unique_ptr<GLShader::ProgramManager> shader_program_manager;
-    std::map<std::array<Tegra::Engines::Maxwell3D::Regs::VertexAttribute,
-                        Tegra::Engines::Maxwell3D::Regs::NumVertexAttributes>,
-             OGLVertexArray>
-        vertex_array_cache;
+    /// End a transform feedback
+    void EndTransformFeedback();
 
-    static constexpr std::size_t STREAM_BUFFER_SIZE = 128 * 1024 * 1024;
-    OGLBufferCache buffer_cache;
+    void QueryFallback(GPUVAddr gpu_addr, VideoCommon::QueryType type,
+                       VideoCommon::QueryPropertiesFlags flags, u32 payload, u32 subreport);
 
-    VertexArrayPushBuffer vertex_array_pushbuffer;
-    BindBuffersRangePushBuffer bind_ubo_pushbuffer{GL_UNIFORM_BUFFER};
-    BindBuffersRangePushBuffer bind_ssbo_pushbuffer{GL_SHADER_STORAGE_BUFFER};
+    Tegra::GPU& gpu;
+    Tegra::MaxwellDeviceMemoryManager& device_memory;
 
-    std::size_t CalculateVertexArraysSize() const;
+    const Device& device;
+    ProgramManager& program_manager;
+    StateTracker& state_tracker;
 
-    std::size_t CalculateIndexBufferSize() const;
+    StagingBufferPool staging_buffer_pool;
+    TextureCacheRuntime texture_cache_runtime;
+    TextureCache texture_cache;
+    BufferCacheRuntime buffer_cache_runtime;
+    BufferCache buffer_cache;
+    ShaderCache shader_cache;
+    QueryCache query_cache;
+    AccelerateDMA accelerate_dma;
+    FenceManagerOpenGL fence_manager;
 
-    /// Updates and returns a vertex array object representing current vertex format
-    GLuint SetupVertexFormat();
+    BlitImageHelper blit_image;
 
-    void SetupVertexBuffer(GLuint vao);
-    void SetupVertexInstances(GLuint vao);
+    boost::container::static_vector<u32, MAX_IMAGE_VIEWS> image_view_indices;
+    std::array<ImageViewId, MAX_IMAGE_VIEWS> image_view_ids;
+    boost::container::static_vector<GLuint, MAX_TEXTURES> sampler_handles;
+    std::array<GLuint, MAX_TEXTURES> texture_handles{};
+    std::array<GLuint, MAX_IMAGES> image_handles{};
 
-    GLintptr SetupIndexBuffer();
+    /// Number of commands queued to the OpenGL driver. Reset on flush.
+    size_t num_queued_commands = 0;
+    bool has_written_global_memory = false;
 
-    GLintptr index_buffer_offset;
-
-    void SetupShaders(GLenum primitive_mode);
-
-    enum class AccelDraw { Disabled, Arrays, Indexed };
-    AccelDraw accelerate_draw = AccelDraw::Disabled;
-
-    OGLFramebuffer clear_framebuffer;
-
-    using CachedPageMap = boost::icl::interval_map<u64, int>;
-    CachedPageMap cached_pages;
-
-    std::mutex pages_mutex;
+    u32 last_clip_distance_mask = 0;
 };
 
 } // namespace OpenGL

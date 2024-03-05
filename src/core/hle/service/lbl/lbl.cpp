@@ -1,31 +1,29 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cmath>
 #include <memory>
 
 #include "common/logging/log.h"
-#include "core/hle/ipc_helpers.h"
-#include "core/hle/kernel/hle_ipc.h"
+#include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/lbl/lbl.h"
+#include "core/hle/service/server_manager.h"
 #include "core/hle/service/service.h"
 #include "core/hle/service/sm/sm.h"
-#include "core/settings.h"
-#include "video_core/renderer_base.h"
 
 namespace Service::LBL {
 
 class LBL final : public ServiceFramework<LBL> {
 public:
-    explicit LBL() : ServiceFramework{"lbl"} {
+    explicit LBL(Core::System& system_) : ServiceFramework{system_, "lbl"} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, &LBL::SaveCurrentSetting, "SaveCurrentSetting"},
             {1, &LBL::LoadCurrentSetting, "LoadCurrentSetting"},
             {2, &LBL::SetCurrentBrightnessSetting, "SetCurrentBrightnessSetting"},
             {3, &LBL::GetCurrentBrightnessSetting, "GetCurrentBrightnessSetting"},
-            {4, &LBL::ApplyCurrentBrightnessSettingToBacklight, "ApplyCurrentBrightnessSettingToBacklight"},
-            {5, &LBL::GetBrightnessSettingAppliedToBacklight, "GetBrightnessSettingAppliedToBacklight"},
+            {4, nullptr, "ApplyCurrentBrightnessSettingToBacklight"},
+            {5, nullptr, "GetBrightnessSettingAppliedToBacklight"},
             {6, &LBL::SwitchBacklightOn, "SwitchBacklightOn"},
             {7, &LBL::SwitchBacklightOff, "SwitchBacklightOff"},
             {8, &LBL::GetBacklightSwitchStatus, "GetBacklightSwitchStatus"},
@@ -35,277 +33,321 @@ public:
             {12, &LBL::EnableAutoBrightnessControl, "EnableAutoBrightnessControl"},
             {13, &LBL::DisableAutoBrightnessControl, "DisableAutoBrightnessControl"},
             {14, &LBL::IsAutoBrightnessControlEnabled, "IsAutoBrightnessControlEnabled"},
-            {15, nullptr, "SetAmbientLightSensorValue"},
-            {16, nullptr, "GetAmbientLightSensorValue"},
-            {17, nullptr, "SetBrightnessReflectionDelayLevel"},
-            {18, nullptr, "GetBrightnessReflectionDelayLevel"},
-            {19, nullptr, "SetCurrentBrightnessMapping"},
-            {20, nullptr, "GetCurrentBrightnessMapping"},
-            {21, nullptr, "SetCurrentAmbientLightSensorMapping"},
-            {22, nullptr, "GetCurrentAmbientLightSensorMapping"},
-            {23, nullptr, "IsAmbientLightSensorAvailable"},
+            {15, &LBL::SetAmbientLightSensorValue, "SetAmbientLightSensorValue"},
+            {16, &LBL::GetAmbientLightSensorValue, "GetAmbientLightSensorValue"},
+            {17, &LBL::SetBrightnessReflectionDelayLevel, "SetBrightnessReflectionDelayLevel"},
+            {18, &LBL::GetBrightnessReflectionDelayLevel, "GetBrightnessReflectionDelayLevel"},
+            {19, &LBL::SetCurrentBrightnessMapping, "SetCurrentBrightnessMapping"},
+            {20, &LBL::GetCurrentBrightnessMapping, "GetCurrentBrightnessMapping"},
+            {21, &LBL::SetCurrentAmbientLightSensorMapping, "SetCurrentAmbientLightSensorMapping"},
+            {22, &LBL::GetCurrentAmbientLightSensorMapping, "GetCurrentAmbientLightSensorMapping"},
+            {23, &LBL::IsAmbientLightSensorAvailable, "IsAmbientLightSensorAvailable"},
             {24, &LBL::SetCurrentBrightnessSettingForVrMode, "SetCurrentBrightnessSettingForVrMode"},
             {25, &LBL::GetCurrentBrightnessSettingForVrMode, "GetCurrentBrightnessSettingForVrMode"},
             {26, &LBL::EnableVrMode, "EnableVrMode"},
             {27, &LBL::DisableVrMode, "DisableVrMode"},
             {28, &LBL::IsVrModeEnabled, "IsVrModeEnabled"},
+            {29, &LBL::IsAutoBrightnessControlSupported, "IsAutoBrightnessControlSupported"},
         };
         // clang-format on
 
         RegisterHandlers(functions);
     }
 
-    void LoadFromSettings() {
-        current_brightness = Settings::values.backlight_brightness;
-        current_vr_mode_brightness = Settings::values.backlight_brightness;
-
-        if (auto_brightness_enabled) {
-            return;
-        }
-
-        if (vr_mode_enabled) {
-            Renderer().SetCurrentBrightness(current_vr_mode_brightness);
-        } else {
-            Renderer().SetCurrentBrightness(current_brightness);
-        }
-    }
-
 private:
-    f32 GetAutoBrightnessValue() const {
-        return 0.5f;
-    }
+    enum class BacklightSwitchStatus : u32 {
+        Off = 0,
+        On = 1,
+    };
 
-    VideoCore::RendererBase& Renderer() {
-        return Core::System::GetInstance().Renderer();
-    }
-
-    void SaveCurrentSetting(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_LBL, "called");
-
-        Settings::values.backlight_brightness = current_brightness;
+    void SaveCurrentSetting(HLERequestContext& ctx) {
+        LOG_WARNING(Service_LBL, "(STUBBED) called");
 
         IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
+        rb.Push(ResultSuccess);
     }
 
-    void LoadCurrentSetting(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_LBL, "called");
-
-        LoadFromSettings();
+    void LoadCurrentSetting(HLERequestContext& ctx) {
+        LOG_WARNING(Service_LBL, "(STUBBED) called");
 
         IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
+        rb.Push(ResultSuccess);
     }
 
-    void SetCurrentBrightnessSetting(Kernel::HLERequestContext& ctx) {
+    void SetCurrentBrightnessSetting(HLERequestContext& ctx) {
         IPC::RequestParser rp{ctx};
-        const auto value = rp.PopRaw<f32>();
+        auto brightness = rp.Pop<float>();
 
-        LOG_DEBUG(Service_LBL, "called, value={:.3f}", value);
-
-        current_brightness = std::clamp(value, 0.0f, 1.0f);
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
-    }
-
-    void GetCurrentBrightnessSetting(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_LBL, "called");
-
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push(current_brightness);
-    }
-
-    void ApplyCurrentBrightnessSettingToBacklight(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_LBL, "called");
-
-        if (!auto_brightness_enabled) {
-            Renderer().SetCurrentBrightness(vr_mode_enabled ? current_vr_mode_brightness
-                                                            : current_brightness);
+        if (!std::isfinite(brightness)) {
+            LOG_ERROR(Service_LBL, "Brightness is infinite!");
+            brightness = 0.0f;
         }
 
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
-    }
+        LOG_DEBUG(Service_LBL, "called brightness={}", brightness);
 
-    void GetBrightnessSettingAppliedToBacklight(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_LBL, "called");
-
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push(Renderer().GetCurrentResultantBrightness());
-    }
-
-    void SwitchBacklightOn(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto fade_time = rp.PopRaw<u64>();
-
-        LOG_DEBUG(Service_LBL, "called, fade_time={:016X}", fade_time);
-
-        Renderer().SetBacklightStatus(true, fade_time);
+        current_brightness = brightness;
+        update_instantly = true;
 
         IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
+        rb.Push(ResultSuccess);
     }
 
-    void SwitchBacklightOff(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto fade_time = rp.PopRaw<u64>();
-
-        LOG_DEBUG(Service_LBL, "called, fade_time={:016X}", fade_time);
-
-        Renderer().SetBacklightStatus(false, fade_time);
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
-    }
-
-    void GetBacklightSwitchStatus(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_LBL, "called");
-
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push<u8>(Renderer().GetBacklightStatus());
-    }
-
-    void EnableDimming(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_LBL, "called");
-
-        dimming_enabled = true;
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
-    }
-
-    void DisableDimming(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_LBL, "callled");
-
-        dimming_enabled = false;
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
-    }
-
-    void IsDimmingEnabled(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_LBL, "called");
-
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push<u8>(dimming_enabled);
-    }
-
-    void EnableAutoBrightnessControl(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_LBL, "called");
-
-        auto_brightness_enabled = true;
-        Renderer().SetCurrentBrightness(GetAutoBrightnessValue());
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
-    }
-
-    void DisableAutoBrightnessControl(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_LBL, "called");
-
-        auto_brightness_enabled = false;
-        Renderer().SetCurrentBrightness(current_brightness);
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
-    }
-
-    void IsAutoBrightnessControlEnabled(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_LBL, "called");
-
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push<u8>(auto_brightness_enabled);
-    }
-
-    void SetCurrentBrightnessSettingForVrMode(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto value = rp.PopRaw<f32>();
-
-        LOG_DEBUG(Service_LBL, "called, value={:.3f}", value);
-
-        current_vr_mode_brightness = std::clamp(value, 0.0f, 1.0f);
-
-        if (vr_mode_enabled && !auto_brightness_enabled) {
-            Renderer().SetCurrentBrightness(value);
+    void GetCurrentBrightnessSetting(HLERequestContext& ctx) {
+        auto brightness = current_brightness;
+        if (!std::isfinite(brightness)) {
+            LOG_ERROR(Service_LBL, "Brightness is infinite!");
+            brightness = 0.0f;
         }
 
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
+        LOG_DEBUG(Service_LBL, "called brightness={}", brightness);
+
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        rb.Push(brightness);
     }
 
-    void GetCurrentBrightnessSettingForVrMode(Kernel::HLERequestContext& ctx) {
+    void SwitchBacklightOn(HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const auto fade_time = rp.Pop<u64_le>();
+        LOG_WARNING(Service_LBL, "(STUBBED) called, fade_time={}", fade_time);
+
+        backlight_enabled = true;
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void SwitchBacklightOff(HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const auto fade_time = rp.Pop<u64_le>();
+        LOG_WARNING(Service_LBL, "(STUBBED) called, fade_time={}", fade_time);
+
+        backlight_enabled = false;
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void GetBacklightSwitchStatus(HLERequestContext& ctx) {
         LOG_DEBUG(Service_LBL, "called");
 
         IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push(current_vr_mode_brightness);
+        rb.Push(ResultSuccess);
+        rb.PushEnum<BacklightSwitchStatus>(backlight_enabled ? BacklightSwitchStatus::On
+                                                             : BacklightSwitchStatus::Off);
     }
 
-    void EnableVrMode(Kernel::HLERequestContext& ctx) {
+    void EnableDimming(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_LBL, "called");
+
+        dimming = true;
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void DisableDimming(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_LBL, "called");
+
+        dimming = false;
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void IsDimmingEnabled(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_LBL, "called");
+
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        rb.Push(dimming);
+    }
+
+    void EnableAutoBrightnessControl(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_LBL, "called");
+        auto_brightness = true;
+        update_instantly = true;
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void DisableAutoBrightnessControl(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_LBL, "called");
+        auto_brightness = false;
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void IsAutoBrightnessControlEnabled(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_LBL, "called");
+
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        rb.Push(auto_brightness);
+    }
+
+    void SetAmbientLightSensorValue(HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const auto light_value = rp.Pop<float>();
+
+        LOG_DEBUG(Service_LBL, "called light_value={}", light_value);
+
+        ambient_light_value = light_value;
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void GetAmbientLightSensorValue(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_LBL, "called");
+
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        rb.Push(ambient_light_value);
+    }
+
+    void SetBrightnessReflectionDelayLevel(HLERequestContext& ctx) {
+        // This is Intentional, this function does absolutely nothing
         LOG_DEBUG(Service_LBL, "called");
 
         IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
+        rb.Push(ResultSuccess);
+    }
 
-        if (!vr_mode_enabled && !auto_brightness_enabled &&
-            current_brightness != current_vr_mode_brightness) {
-            Renderer().SetCurrentBrightness(current_vr_mode_brightness);
+    void GetBrightnessReflectionDelayLevel(HLERequestContext& ctx) {
+        // This is intentional, the function is hard coded to return 0.0f on hardware
+        LOG_DEBUG(Service_LBL, "called");
+
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        rb.Push(0.0f);
+    }
+
+    void SetCurrentBrightnessMapping(HLERequestContext& ctx) {
+        // This is Intentional, this function does absolutely nothing
+        LOG_DEBUG(Service_LBL, "called");
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void GetCurrentBrightnessMapping(HLERequestContext& ctx) {
+        // This is Intentional, this function does absolutely nothing
+        LOG_DEBUG(Service_LBL, "called");
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+        // This function is suppose to return something but it seems like it doesn't
+    }
+
+    void SetCurrentAmbientLightSensorMapping(HLERequestContext& ctx) {
+        // This is Intentional, this function does absolutely nothing
+        LOG_DEBUG(Service_LBL, "called");
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void GetCurrentAmbientLightSensorMapping(HLERequestContext& ctx) {
+        // This is Intentional, this function does absolutely nothing
+        LOG_DEBUG(Service_LBL, "called");
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+        // This function is suppose to return something but it seems like it doesn't
+    }
+
+    void IsAmbientLightSensorAvailable(HLERequestContext& ctx) {
+        LOG_WARNING(Service_LBL, "(STUBBED) called");
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        // TODO(ogniK): Only return true if there's no device error
+        rb.Push(true);
+    }
+
+    void SetCurrentBrightnessSettingForVrMode(HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        auto brightness = rp.Pop<float>();
+
+        if (!std::isfinite(brightness)) {
+            LOG_ERROR(Service_LBL, "Brightness is infinite!");
+            brightness = 0.0f;
         }
+
+        LOG_DEBUG(Service_LBL, "called brightness={}", brightness);
+
+        current_vr_brightness = brightness;
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void GetCurrentBrightnessSettingForVrMode(HLERequestContext& ctx) {
+        auto brightness = current_vr_brightness;
+        if (!std::isfinite(brightness)) {
+            LOG_ERROR(Service_LBL, "Brightness is infinite!");
+            brightness = 0.0f;
+        }
+
+        LOG_DEBUG(Service_LBL, "called brightness={}", brightness);
+
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        rb.Push(brightness);
+    }
+
+    void EnableVrMode(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_LBL, "called");
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
 
         vr_mode_enabled = true;
     }
 
-    void DisableVrMode(Kernel::HLERequestContext& ctx) {
+    void DisableVrMode(HLERequestContext& ctx) {
         LOG_DEBUG(Service_LBL, "called");
 
         IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
-
-        if (vr_mode_enabled && !auto_brightness_enabled &&
-            current_brightness != current_vr_mode_brightness) {
-            Renderer().SetCurrentBrightness(current_brightness);
-        }
+        rb.Push(ResultSuccess);
 
         vr_mode_enabled = false;
     }
 
-    void IsVrModeEnabled(Kernel::HLERequestContext& ctx) {
+    void IsVrModeEnabled(HLERequestContext& ctx) {
         LOG_DEBUG(Service_LBL, "called");
 
         IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
+        rb.Push(ResultSuccess);
         rb.Push(vr_mode_enabled);
     }
 
-    bool auto_brightness_enabled = false;
-    bool dimming_enabled = true;
+    void IsAutoBrightnessControlSupported(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_LBL, "called");
 
-    f32 current_brightness = GetAutoBrightnessValue();
-    f32 current_vr_mode_brightness = GetAutoBrightnessValue();
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        rb.Push<u8>(auto_brightness_supported);
+    }
 
     bool vr_mode_enabled = false;
+    float current_brightness = 1.0f;
+    float ambient_light_value = 0.0f;
+    float current_vr_brightness = 1.0f;
+    bool dimming = true;
+    bool backlight_enabled = true;
+    bool update_instantly = false;
+    bool auto_brightness = false;
+    bool auto_brightness_supported = true; // TODO(ogniK): Move to system settings
 };
 
-void RequestLoadCurrentSetting(SM::ServiceManager& sm) {
-    if (&sm == nullptr) {
-        return;
-    }
+void LoopProcess(Core::System& system) {
+    auto server_manager = std::make_unique<ServerManager>(system);
 
-    const auto lbl = sm.GetService<LBL>("lbl");
-
-    if (lbl) {
-        lbl->LoadFromSettings();
-    }
-}
-
-void InstallInterfaces(SM::ServiceManager& sm) {
-    std::make_shared<LBL>()->InstallAsService(sm);
+    server_manager->RegisterNamedService("lbl", std::make_shared<LBL>(system));
+    ServerManager::RunServer(std::move(server_manager));
 }
 
 } // namespace Service::LBL

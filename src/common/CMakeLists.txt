@@ -1,19 +1,8 @@
-# Add a custom command to generate a new shader_cache_version hash when any of the following files change
-# NOTE: This is an approximation of what files affect shader generation, its possible something else
-# could affect the result, but much more unlikely than the following files. Keeping a list of files
-# like this allows for much better caching since it doesn't force the user to recompile binary shaders every update
-set(VIDEO_CORE "${CMAKE_SOURCE_DIR}/src/video_core")
-if (DEFINED ENV{CI})
-  if (DEFINED ENV{TRAVIS})
-    set(BUILD_REPOSITORY $ENV{TRAVIS_REPO_SLUG})
-    set(BUILD_TAG $ENV{TRAVIS_TAG})
-  elseif(DEFINED ENV{APPVEYOR})
-    set(BUILD_REPOSITORY $ENV{APPVEYOR_REPO_NAME})
-    set(BUILD_TAG $ENV{APPVEYOR_REPO_TAG_NAME})
-  elseif(DEFINED ENV{AZURE})
-    set(BUILD_REPOSITORY $ENV{AZURE_REPO_NAME})
-    set(BUILD_TAG $ENV{AZURE_REPO_TAG})
-  endif()
+# SPDX-FileCopyrightText: 2018 yuzu Emulator Project
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+if (DEFINED ENV{AZURECIREPO})
+  set(BUILD_REPOSITORY $ENV{AZURECIREPO})
 endif()
 if (DEFINED ENV{TITLEBARFORMATIDLE})
   set(TITLE_BAR_FORMAT_IDLE $ENV{TITLEBARFORMATIDLE})
@@ -24,123 +13,126 @@ endif ()
 if (DEFINED ENV{DISPLAYVERSION})
   set(DISPLAY_VERSION $ENV{DISPLAYVERSION})
 endif ()
-add_custom_command(OUTPUT scm_rev.cpp
-    COMMAND ${CMAKE_COMMAND}
-      -DSRC_DIR="${CMAKE_SOURCE_DIR}"
-      -DBUILD_REPOSITORY="${BUILD_REPOSITORY}"
-      -DTITLE_BAR_FORMAT_IDLE="${TITLE_BAR_FORMAT_IDLE}"
-      -DTITLE_BAR_FORMAT_RUNNING="${TITLE_BAR_FORMAT_RUNNING}"
-      -DBUILD_TAG="${BUILD_TAG}"
-      -DBUILD_ID="${DISPLAY_VERSION}"
-      -P "${CMAKE_SOURCE_DIR}/CMakeModules/GenerateSCMRev.cmake"
-    DEPENDS
-      # WARNING! It was too much work to try and make a common location for this list,
-      # so if you need to change it, please update CMakeModules/GenerateSCMRev.cmake as well
-      "${VIDEO_CORE}/renderer_opengl/gl_shader_cache.cpp"
-      "${VIDEO_CORE}/renderer_opengl/gl_shader_cache.h"
-      "${VIDEO_CORE}/renderer_opengl/gl_shader_decompiler.cpp"
-      "${VIDEO_CORE}/renderer_opengl/gl_shader_decompiler.h"
-      "${VIDEO_CORE}/renderer_opengl/gl_shader_disk_cache.cpp"
-      "${VIDEO_CORE}/renderer_opengl/gl_shader_disk_cache.h"
-      "${VIDEO_CORE}/renderer_opengl/gl_shader_gen.cpp"
-      "${VIDEO_CORE}/renderer_opengl/gl_shader_gen.h"
-      "${VIDEO_CORE}/shader/decode/arithmetic.cpp"
-      "${VIDEO_CORE}/shader/decode/arithmetic_half.cpp"
-      "${VIDEO_CORE}/shader/decode/arithmetic_half_immediate.cpp"
-      "${VIDEO_CORE}/shader/decode/arithmetic_immediate.cpp"
-      "${VIDEO_CORE}/shader/decode/arithmetic_integer.cpp"
-      "${VIDEO_CORE}/shader/decode/arithmetic_integer_immediate.cpp"
-      "${VIDEO_CORE}/shader/decode/bfe.cpp"
-      "${VIDEO_CORE}/shader/decode/bfi.cpp"
-      "${VIDEO_CORE}/shader/decode/conversion.cpp"
-      "${VIDEO_CORE}/shader/decode/ffma.cpp"
-      "${VIDEO_CORE}/shader/decode/float_set.cpp"
-      "${VIDEO_CORE}/shader/decode/float_set_predicate.cpp"
-      "${VIDEO_CORE}/shader/decode/half_set.cpp"
-      "${VIDEO_CORE}/shader/decode/half_set_predicate.cpp"
-      "${VIDEO_CORE}/shader/decode/hfma2.cpp"
-      "${VIDEO_CORE}/shader/decode/image.cpp"
-      "${VIDEO_CORE}/shader/decode/integer_set.cpp"
-      "${VIDEO_CORE}/shader/decode/integer_set_predicate.cpp"
-      "${VIDEO_CORE}/shader/decode/memory.cpp"
-      "${VIDEO_CORE}/shader/decode/texture.cpp"
-      "${VIDEO_CORE}/shader/decode/other.cpp"
-      "${VIDEO_CORE}/shader/decode/predicate_set_predicate.cpp"
-      "${VIDEO_CORE}/shader/decode/predicate_set_register.cpp"
-      "${VIDEO_CORE}/shader/decode/register_set_predicate.cpp"
-      "${VIDEO_CORE}/shader/decode/shift.cpp"
-      "${VIDEO_CORE}/shader/decode/video.cpp"
-      "${VIDEO_CORE}/shader/decode/warp.cpp"
-      "${VIDEO_CORE}/shader/decode/xmad.cpp"
-      "${VIDEO_CORE}/shader/ast.cpp"
-      "${VIDEO_CORE}/shader/ast.h"
-      "${VIDEO_CORE}/shader/compiler_settings.cpp"
-      "${VIDEO_CORE}/shader/compiler_settings.h"
-      "${VIDEO_CORE}/shader/const_buffer_locker.cpp"
-      "${VIDEO_CORE}/shader/const_buffer_locker.h"
-      "${VIDEO_CORE}/shader/control_flow.cpp"
-      "${VIDEO_CORE}/shader/control_flow.h"
-      "${VIDEO_CORE}/shader/decode.cpp"
-      "${VIDEO_CORE}/shader/expr.cpp"
-      "${VIDEO_CORE}/shader/expr.h"
-      "${VIDEO_CORE}/shader/node.h"
-      "${VIDEO_CORE}/shader/node_helper.cpp"
-      "${VIDEO_CORE}/shader/node_helper.h"
-      "${VIDEO_CORE}/shader/shader_ir.cpp"
-      "${VIDEO_CORE}/shader/shader_ir.h"
-      "${VIDEO_CORE}/shader/track.cpp"
-      # and also check that the scm_rev files haven't changed
-      "${CMAKE_CURRENT_SOURCE_DIR}/scm_rev.cpp.in"
-      "${CMAKE_CURRENT_SOURCE_DIR}/scm_rev.h"
-      # technically we should regenerate if the git version changed, but its not worth the effort imo
-      "${CMAKE_SOURCE_DIR}/CMakeModules/GenerateSCMRev.cmake"
-)
+
+include(GenerateSCMRev)
 
 add_library(common STATIC
+    address_space.cpp
+    address_space.h
     algorithm.h
     alignment.h
+    announce_multiplayer_room.h
+    assert.cpp
     assert.h
-    detached_tasks.cpp
-    detached_tasks.h
+    atomic_helpers.h
+    atomic_ops.h
+    bit_cast.h
     bit_field.h
+    bit_set.h
     bit_util.h
+    bounded_threadsafe_queue.h
     cityhash.cpp
     cityhash.h
-    color.h
     common_funcs.h
-    common_paths.h
+    common_precompiled_headers.h
     common_types.h
-    file_util.cpp
-    file_util.h
+    concepts.h
+    container_hash.h
+    demangle.cpp
+    demangle.h
+    detached_tasks.cpp
+    detached_tasks.h
+    div_ceil.h
+    dynamic_library.cpp
+    dynamic_library.h
+    elf.h
+    error.cpp
+    error.h
+    expected.h
+    fiber.cpp
+    fiber.h
+    fixed_point.h
+    free_region_manager.h
+    fs/file.cpp
+    fs/file.h
+    fs/fs.cpp
+    fs/fs.h
+    fs/fs_paths.h
+    fs/fs_types.h
+    fs/fs_util.cpp
+    fs/fs_util.h
+    fs/path_util.cpp
+    fs/path_util.h
     hash.h
+    heap_tracker.cpp
+    heap_tracker.h
     hex_util.cpp
     hex_util.h
+    host_memory.cpp
+    host_memory.h
+    input.h
+    intrusive_red_black_tree.h
+    literals.h
     logging/backend.cpp
     logging/backend.h
     logging/filter.cpp
     logging/filter.h
+    logging/formatter.h
     logging/log.h
+    logging/log_entry.h
     logging/text_formatter.cpp
     logging/text_formatter.h
+    logging/types.h
     lz4_compression.cpp
     lz4_compression.h
+    make_unique_for_overwrite.h
     math_util.h
-    memory_hook.cpp
-    memory_hook.h
+    memory_detect.cpp
+    memory_detect.h
     microprofile.cpp
     microprofile.h
     microprofileui.h
-    misc.cpp
-    multi_level_queue.h
+    multi_level_page_table.cpp
+    multi_level_page_table.h
+    nvidia_flags.cpp
+    nvidia_flags.h
+    overflow.h
     page_table.cpp
     page_table.h
     param_package.cpp
     param_package.h
+    parent_of_member.h
+    point.h
+    precompiled_headers.h
     quaternion.h
+    range_map.h
+    range_mutex.h
+    range_sets.h
+    range_sets.inc
+    reader_writer_queue.h
     ring_buffer.h
-    scm_rev.cpp
+    ${CMAKE_CURRENT_BINARY_DIR}/scm_rev.cpp
     scm_rev.h
     scope_exit.h
+    scratch_buffer.h
+    settings.cpp
+    settings.h
+    settings_common.cpp
+    settings_common.h
+    settings_enums.h
+    settings_input.cpp
+    settings_input.h
+    settings_setting.h
+    slot_vector.h
+    socket_types.h
+    spin_lock.cpp
+    spin_lock.h
+    stb.cpp
+    stb.h
+    steady_clock.cpp
+    steady_clock.h
+    stream.cpp
+    stream.h
     string_util.cpp
     string_util.h
     swap.h
@@ -149,28 +141,129 @@ add_library(common STATIC
     thread.cpp
     thread.h
     thread_queue_list.h
+    thread_worker.h
     threadsafe_queue.h
-    timer.cpp
-    timer.h
-    uint128.cpp
+    time_zone.cpp
+    time_zone.h
+    tiny_mt.h
+    tree.h
+    typed_address.h
     uint128.h
+    unique_function.h
     uuid.cpp
     uuid.h
     vector_math.h
-    web_result.h
+    virtual_buffer.cpp
+    virtual_buffer.h
+    wall_clock.cpp
+    wall_clock.h
     zstd_compression.cpp
     zstd_compression.h
 )
+
+if (YUZU_ENABLE_PORTABLE)
+    add_compile_definitions(YUZU_ENABLE_PORTABLE)
+endif()
+
+if (WIN32)
+  target_sources(common PRIVATE
+    windows/timer_resolution.cpp
+    windows/timer_resolution.h
+  )
+  target_link_libraries(common PRIVATE ntdll)
+endif()
+
+if (NOT WIN32)
+  target_sources(common PRIVATE
+    signal_chain.cpp
+    signal_chain.h
+  )
+endif()
+
+if(ANDROID)
+    target_sources(common
+        PUBLIC
+            fs/fs_android.cpp
+            fs/fs_android.h
+            android/android_common.cpp
+            android/android_common.h
+            android/id_cache.cpp
+            android/id_cache.h
+            android/applets/software_keyboard.cpp
+            android/applets/software_keyboard.h
+    )
+endif()
+
+if (UNIX AND NOT APPLE)
+  target_sources(common PRIVATE
+    linux/gamemode.cpp
+    linux/gamemode.h
+  )
+
+  target_link_libraries(common PRIVATE gamemode::headers)
+endif()
 
 if(ARCHITECTURE_x86_64)
     target_sources(common
         PRIVATE
             x64/cpu_detect.cpp
             x64/cpu_detect.h
+            x64/cpu_wait.cpp
+            x64/cpu_wait.h
+            x64/native_clock.cpp
+            x64/native_clock.h
+            x64/rdtsc.cpp
+            x64/rdtsc.h
+            x64/xbyak_abi.h
+            x64/xbyak_util.h
+    )
+    target_link_libraries(common PRIVATE xbyak::xbyak)
+endif()
+
+if (HAS_NCE)
+    target_sources(common
+        PRIVATE
+            arm64/native_clock.cpp
+            arm64/native_clock.h
     )
 endif()
 
-create_target_directory_groups(common)
+if (MSVC)
+  target_compile_definitions(common PRIVATE
+    # The standard library doesn't provide any replacement for codecvt yet
+    # so we can disable this deprecation warning for the time being.
+    _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
+  )
+  target_compile_options(common PRIVATE
+    /we4242 # 'identifier': conversion from 'type1' to 'type2', possible loss of data
+    /we4254 # 'operator': conversion from 'type1:field_bits' to 'type2:field_bits', possible loss of data
+    /we4800 # Implicit conversion from 'type' to bool. Possible information loss
+  )
+else()
+  set_source_files_properties(stb.cpp PROPERTIES COMPILE_OPTIONS "-Wno-implicit-fallthrough;-Wno-missing-declarations;-Wno-missing-field-initializers")
+endif()
 
-target_link_libraries(common PUBLIC Boost::boost fmt microprofile)
-target_link_libraries(common PRIVATE lz4_static libzstd_static)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  target_compile_options(common PRIVATE
+    -fsized-deallocation
+    -Werror=unreachable-code-aggressive
+  )
+  target_compile_definitions(common PRIVATE
+    # Clang 14 and earlier have errors when explicitly instantiating Settings::Setting
+    $<$<VERSION_LESS:$<CXX_COMPILER_VERSION>,15>:CANNOT_EXPLICITLY_INSTANTIATE>
+  )
+endif()
+
+target_link_libraries(common PUBLIC Boost::context Boost::headers fmt::fmt microprofile stb::headers Threads::Threads)
+target_link_libraries(common PRIVATE lz4::lz4 zstd::zstd LLVM::Demangle)
+
+if (ANDROID)
+    # For ASharedMemory_create
+    target_link_libraries(common PRIVATE android)
+endif()
+
+if (YUZU_USE_PRECOMPILED_HEADERS)
+    target_precompile_headers(common PRIVATE precompiled_headers.h)
+endif()
+
+create_target_directory_groups(common)

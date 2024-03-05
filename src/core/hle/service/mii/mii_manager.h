@@ -1,273 +1,87 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
-#include "common/bit_field.h"
-#include "common/common_funcs.h"
-#include "common/uuid.h"
+#include <span>
+
+#include "core/hle/result.h"
+#include "core/hle/service/mii/mii_database_manager.h"
+#include "core/hle/service/mii/mii_types.h"
 
 namespace Service::Mii {
+class CharInfo;
+class CoreData;
+class StoreData;
+class Ver3StoreData;
 
-constexpr std::size_t MAX_MIIS = 100;
-constexpr u32 INVALID_INDEX = 0xFFFFFFFF;
+struct CharInfoElement;
+struct StoreDataElement;
 
-struct RandomParameters {
-    u32 unknown_1;
-    u32 unknown_2;
-    u32 unknown_3;
-};
-static_assert(sizeof(RandomParameters) == 0xC, "RandomParameters has incorrect size.");
-
-enum class Source : u32 {
-    Database = 0,
-    Default = 1,
-    Account = 2,
-    Friend = 3,
-};
-
-std::ostream& operator<<(std::ostream& os, Source source);
-
-struct MiiInfo {
-    Common::UUID uuid;
-    std::array<char16_t, 11> name;
-    u8 font_region;
-    u8 favorite_color;
-    u8 gender;
-    u8 height;
-    u8 weight;
-    u8 mii_type;
-    u8 mii_region;
-    u8 face_type;
-    u8 face_color;
-    u8 face_wrinkle;
-    u8 face_makeup;
-    u8 hair_type;
-    u8 hair_color;
-    bool hair_flip;
-    u8 eye_type;
-    u8 eye_color;
-    u8 eye_scale;
-    u8 eye_aspect_ratio;
-    u8 eye_rotate;
-    u8 eye_x;
-    u8 eye_y;
-    u8 eyebrow_type;
-    u8 eyebrow_color;
-    u8 eyebrow_scale;
-    u8 eyebrow_aspect_ratio;
-    u8 eyebrow_rotate;
-    u8 eyebrow_x;
-    u8 eyebrow_y;
-    u8 nose_type;
-    u8 nose_scale;
-    u8 nose_y;
-    u8 mouth_type;
-    u8 mouth_color;
-    u8 mouth_scale;
-    u8 mouth_aspect_ratio;
-    u8 mouth_y;
-    u8 facial_hair_color;
-    u8 beard_type;
-    u8 mustache_type;
-    u8 mustache_scale;
-    u8 mustache_y;
-    u8 glasses_type;
-    u8 glasses_color;
-    u8 glasses_scale;
-    u8 glasses_y;
-    u8 mole_type;
-    u8 mole_scale;
-    u8 mole_x;
-    u8 mole_y;
-    INSERT_PADDING_BYTES(1);
-
-    std::u16string Name() const;
-};
-static_assert(sizeof(MiiInfo) == 0x58, "MiiInfo has incorrect size.");
-static_assert(std::has_unique_object_representations_v<MiiInfo>,
-              "All bits of MiiInfo must contribute to its value.");
-
-bool operator==(const MiiInfo& lhs, const MiiInfo& rhs);
-bool operator!=(const MiiInfo& lhs, const MiiInfo& rhs);
-
-#pragma pack(push, 4)
-struct MiiInfoElement {
-    MiiInfo info;
-    Source source;
-};
-static_assert(sizeof(MiiInfoElement) == 0x5C, "MiiInfoElement has incorrect size.");
-
-struct MiiStoreBitFields {
-    union {
-        u32 word_0;
-
-        BitField<24, 8, u32> hair_type;
-        BitField<23, 1, u32> mole_type;
-        BitField<16, 7, u32> height;
-        BitField<15, 1, u32> hair_flip;
-        BitField<8, 7, u32> weight;
-        BitField<0, 7, u32> hair_color;
-    };
-
-    union {
-        u32 word_1;
-
-        BitField<31, 1, u32> gender;
-        BitField<24, 7, u32> eye_color;
-        BitField<16, 7, u32> eyebrow_color;
-        BitField<8, 7, u32> mouth_color;
-        BitField<0, 7, u32> facial_hair_color;
-    };
-
-    union {
-        u32 word_2;
-
-        BitField<31, 1, u32> mii_type;
-        BitField<24, 7, u32> glasses_color;
-        BitField<22, 2, u32> font_region;
-        BitField<16, 6, u32> eye_type;
-        BitField<14, 2, u32> mii_region;
-        BitField<8, 6, u32> mouth_type;
-        BitField<5, 3, u32> glasses_scale;
-        BitField<0, 5, u32> eye_y;
-    };
-
-    union {
-        u32 word_3;
-
-        BitField<29, 3, u32> mustache_type;
-        BitField<24, 5, u32> eyebrow_type;
-        BitField<21, 3, u32> beard_type;
-        BitField<16, 5, u32> nose_type;
-        BitField<13, 3, u32> mouth_aspect;
-        BitField<8, 5, u32> nose_y;
-        BitField<5, 3, u32> eyebrow_aspect;
-        BitField<0, 5, u32> mouth_y;
-    };
-
-    union {
-        u32 word_4;
-
-        BitField<29, 3, u32> eye_rotate;
-        BitField<24, 5, u32> mustache_y;
-        BitField<21, 3, u32> eye_aspect;
-        BitField<16, 5, u32> glasses_y;
-        BitField<13, 3, u32> eye_scale;
-        BitField<8, 5, u32> mole_x;
-        BitField<0, 5, u32> mole_y;
-    };
-
-    union {
-        u32 word_5;
-
-        BitField<24, 5, u32> glasses_type;
-        BitField<20, 4, u32> face_type;
-        BitField<16, 4, u32> favorite_color;
-        BitField<12, 4, u32> face_wrinkle;
-        BitField<8, 4, u32> face_color;
-        BitField<4, 4, u32> eye_x;
-        BitField<0, 4, u32> face_makeup;
-    };
-
-    union {
-        u32 word_6;
-
-        BitField<28, 4, u32> eyebrow_rotate;
-        BitField<24, 4, u32> eyebrow_scale;
-        BitField<20, 4, u32> eyebrow_y;
-        BitField<16, 4, u32> eyebrow_x;
-        BitField<12, 4, u32> mouth_scale;
-        BitField<8, 4, u32> nose_scale;
-        BitField<4, 4, u32> mole_scale;
-        BitField<0, 4, u32> mustache_scale;
-    };
-};
-static_assert(sizeof(MiiStoreBitFields) == 0x1C, "MiiStoreBitFields has incorrect size.");
-static_assert(std::is_trivially_copyable_v<MiiStoreBitFields>,
-              "MiiStoreBitFields is not trivially copyable.");
-
-struct MiiStoreData {
-    // This corresponds to the above structure MiiStoreBitFields. I did it like this because the
-    // BitField<> type makes this (and any thing that contains it) not trivially copyable, which is
-    // not suitable for our uses.
-    std::array<u8, 0x1C> data;
-    static_assert(sizeof(MiiStoreBitFields) == sizeof(data), "data field has incorrect size.");
-
-    std::array<char16_t, 10> name;
-    Common::UUID uuid;
-    u16 crc_1;
-    u16 crc_2;
-
-    std::u16string Name() const;
-};
-static_assert(sizeof(MiiStoreData) == 0x44, "MiiStoreData has incorrect size.");
-
-struct MiiStoreDataElement {
-    MiiStoreData data;
-    Source source;
-};
-static_assert(sizeof(MiiStoreDataElement) == 0x48, "MiiStoreDataElement has incorrect size.");
-
-struct MiiDatabase {
-    u32 magic; // 'NFDB'
-    std::array<MiiStoreData, MAX_MIIS> miis;
-    INSERT_PADDING_BYTES(1);
-    u8 count;
-    u16 crc;
-};
-static_assert(sizeof(MiiDatabase) == 0x1A98, "MiiDatabase has incorrect size.");
-#pragma pack(pop)
-
-// The Mii manager is responsible for loading and storing the Miis to the database in NAND along
-// with providing an easy interface for HLE emulation of the mii service.
+// The Mii manager is responsible for handling mii operations along with providing an easy interface
+// for HLE emulation of the mii service.
 class MiiManager {
 public:
     MiiManager();
-    ~MiiManager();
+    Result Initialize(DatabaseSessionMetadata& metadata);
 
-    MiiInfo CreateRandom(RandomParameters params);
-    MiiInfo CreateDefault(u32 index);
+    // Auto generated mii
+    void BuildDefault(CharInfo& out_char_info, u32 index) const;
+    void BuildBase(CharInfo& out_char_info, Gender gender) const;
+    void BuildRandom(CharInfo& out_char_info, Age age, Gender gender, Race race) const;
 
-    bool CheckUpdatedFlag() const;
-    void ResetUpdatedFlag();
+    // Database operations
+    bool IsFullDatabase() const;
+    void SetInterfaceVersion(DatabaseSessionMetadata& metadata, u32 version) const;
+    bool IsUpdated(DatabaseSessionMetadata& metadata, SourceFlag source_flag) const;
+    u32 GetCount(const DatabaseSessionMetadata& metadata, SourceFlag source_flag) const;
+    Result Move(DatabaseSessionMetadata& metadata, u32 index, const Common::UUID& create_id);
+    Result AddOrReplace(DatabaseSessionMetadata& metadata, const StoreData& store_data);
+    Result Delete(DatabaseSessionMetadata& metadata, const Common::UUID& create_id);
+    s32 FindIndex(const Common::UUID& create_id, bool is_special) const;
+    Result GetIndex(const DatabaseSessionMetadata& metadata, const CharInfo& char_info,
+                    s32& out_index) const;
+    Result Append(DatabaseSessionMetadata& metadata, const CharInfo& char_info);
 
-    bool IsTestModeEnabled() const;
+    // Test database operations
+    bool IsBrokenWithClearFlag(DatabaseSessionMetadata& metadata);
+    Result DestroyFile(DatabaseSessionMetadata& metadata);
+    Result DeleteFile();
+    Result Format(DatabaseSessionMetadata& metadata);
 
-    bool Empty() const;
-    bool Full() const;
+    // Mii conversions
+    Result ConvertV3ToCharInfo(CharInfo& out_char_info, const Ver3StoreData& mii_v3) const;
+    Result ConvertCoreDataToCharInfo(CharInfo& out_char_info, const CoreData& core_data) const;
+    Result ConvertCharInfoToCoreData(CoreData& out_core_data, const CharInfo& char_info) const;
+    Result UpdateLatest(const DatabaseSessionMetadata& metadata, CharInfo& out_char_info,
+                        const CharInfo& char_info, SourceFlag source_flag) const;
+    Result UpdateLatest(const DatabaseSessionMetadata& metadata, StoreData& out_store_data,
+                        const StoreData& store_data, SourceFlag source_flag) const;
 
-    void Clear();
-
-    u32 Size() const;
-
-    MiiInfo GetInfo(u32 index) const;
-    MiiInfoElement GetInfoElement(u32 index) const;
-    MiiStoreData GetStoreData(u32 index) const;
-    MiiStoreDataElement GetStoreDataElement(u32 index) const;
-
-    bool Remove(Common::UUID uuid);
-    u32 IndexOf(Common::UUID uuid) const;
-    u32 IndexOf(const MiiInfo& info) const;
-
-    bool Move(Common::UUID uuid, u32 new_index);
-    bool AddOrReplace(const MiiStoreData& data);
-
-    bool DestroyFile();
-    bool DeleteFile();
+    // Overloaded getters
+    Result Get(const DatabaseSessionMetadata& metadata, std::span<CharInfoElement> out_elements,
+               u32& out_count, SourceFlag source_flag) const;
+    Result Get(const DatabaseSessionMetadata& metadata, std::span<CharInfo> out_char_info,
+               u32& out_count, SourceFlag source_flag) const;
+    Result Get(const DatabaseSessionMetadata& metadata, std::span<StoreDataElement> out_elements,
+               u32& out_count, SourceFlag source_flag) const;
+    Result Get(const DatabaseSessionMetadata& metadata, std::span<StoreData> out_store_data,
+               u32& out_count, SourceFlag source_flag) const;
 
 private:
-    void WriteToFile();
-    void ReadFromFile();
+    Result BuildDefault(std::span<CharInfoElement> out_elements, u32& out_count,
+                        SourceFlag source_flag) const;
+    Result BuildDefault(std::span<CharInfo> out_char_info, u32& out_count,
+                        SourceFlag source_flag) const;
+    Result BuildDefault(std::span<StoreDataElement> out_char_info, u32& out_count,
+                        SourceFlag source_flag) const;
+    Result BuildDefault(std::span<StoreData> out_char_info, u32& out_count,
+                        SourceFlag source_flag) const;
 
-    MiiStoreData CreateMiiWithUniqueUUID() const;
+    DatabaseManager database_manager{};
 
-    void EnsureDatabasePartition();
-
-    MiiDatabase database;
-    bool updated_flag = false;
-    bool is_test_mode_enabled = false;
+    // This should be a global value
+    bool is_broken_with_clear_flag{};
 };
 
 }; // namespace Service::Mii

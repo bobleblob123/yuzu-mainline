@@ -1,19 +1,21 @@
-// Copyright 2013 Dolphin Emulator Project / 2014 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2013 Dolphin Emulator Project
+// SPDX-FileCopyrightText: 2014 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
 #include <cctype>
 #include <codecvt>
-#include <cstdlib>
 #include <locale>
 #include <sstream>
-#include "common/common_paths.h"
-#include "common/logging/log.h"
+
 #include "common/string_util.h"
 
 #ifdef _WIN32
 #include <windows.h>
+#endif
+
+#ifdef ANDROID
+#include <common/fs/fs_android.h>
 #endif
 
 namespace Common {
@@ -21,18 +23,22 @@ namespace Common {
 /// Make a string lowercase
 std::string ToLower(std::string str) {
     std::transform(str.begin(), str.end(), str.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return str;
 }
 
 /// Make a string uppercase
 std::string ToUpper(std::string str) {
     std::transform(str.begin(), str.end(), str.begin(),
-                   [](unsigned char c) { return std::toupper(c); });
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     return str;
 }
 
-std::string StringFromBuffer(const std::vector<u8>& data) {
+std::string StringFromBuffer(std::span<const u8> data) {
+    return std::string(data.begin(), std::find(data.begin(), data.end(), '\0'));
+}
+
+std::string StringFromBuffer(std::span<const char> data) {
     return std::string(data.begin(), std::find(data.begin(), data.end(), '\0'));
 }
 
@@ -65,6 +71,14 @@ bool SplitPath(const std::string& full_path, std::string* _pPath, std::string* _
     if (full_path.empty())
         return false;
 
+#ifdef ANDROID
+    if (full_path[0] != '/') {
+        *_pPath = Common::FS::Android::GetParentDirectory(full_path);
+        *_pFilename = Common::FS::Android::GetFilename(full_path);
+        return true;
+    }
+#endif
+
     std::size_t dir_end = full_path.find_last_of("/"
 // windows needs the : included for something like just "C:" to be considered a directory
 #ifdef _WIN32
@@ -90,18 +104,6 @@ bool SplitPath(const std::string& full_path, std::string* _pPath, std::string* _
         *_pExtension = full_path.substr(fname_end);
 
     return true;
-}
-
-void BuildCompleteFilename(std::string& _CompleteFilename, const std::string& _Path,
-                           const std::string& _Filename) {
-    _CompleteFilename = _Path;
-
-    // check for seperator
-    if (DIR_SEP_CHR != *_CompleteFilename.rbegin())
-        _CompleteFilename += DIR_SEP_CHR;
-
-    // add the filename
-    _CompleteFilename += _Filename;
 }
 
 void SplitString(const std::string& str, const char delim, std::vector<std::string>& output) {
@@ -139,37 +141,28 @@ std::string ReplaceAll(std::string result, const std::string& src, const std::st
     return result;
 }
 
-std::string UTF16ToUTF8(const std::u16string& input) {
-#ifdef _MSC_VER
-    // Workaround for missing char16_t/char32_t instantiations in MSVC2017
-    std::wstring_convert<std::codecvt_utf8_utf16<__int16>, __int16> convert;
-    std::basic_string<__int16> tmp_buffer(input.cbegin(), input.cend());
-    return convert.to_bytes(tmp_buffer);
-#else
+std::string UTF16ToUTF8(std::u16string_view input) {
     std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> convert;
-    return convert.to_bytes(input);
-#endif
+    return convert.to_bytes(input.data(), input.data() + input.size());
 }
 
-std::u16string UTF8ToUTF16(const std::string& input) {
-#ifdef _MSC_VER
-    // Workaround for missing char16_t/char32_t instantiations in MSVC2017
-    std::wstring_convert<std::codecvt_utf8_utf16<__int16>, __int16> convert;
-    auto tmp_buffer = convert.from_bytes(input);
-    return std::u16string(tmp_buffer.cbegin(), tmp_buffer.cend());
-#else
+std::u16string UTF8ToUTF16(std::string_view input) {
     std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> convert;
-    return convert.from_bytes(input);
-#endif
+    return convert.from_bytes(input.data(), input.data() + input.size());
+}
+
+std::u32string UTF8ToUTF32(std::string_view input) {
+    std::wstring_convert<std::codecvt_utf8<char32_t>, char32_t> convert;
+    return convert.from_bytes(input.data(), input.data() + input.size());
 }
 
 #ifdef _WIN32
-static std::wstring CPToUTF16(u32 code_page, const std::string& input) {
+static std::wstring CPToUTF16(u32 code_page, std::string_view input) {
     const auto size =
         MultiByteToWideChar(code_page, 0, input.data(), static_cast<int>(input.size()), nullptr, 0);
 
     if (size == 0) {
-        return L"";
+        return {};
     }
 
     std::wstring output(size, L'\0');
@@ -182,11 +175,11 @@ static std::wstring CPToUTF16(u32 code_page, const std::string& input) {
     return output;
 }
 
-std::string UTF16ToUTF8(const std::wstring& input) {
+std::string UTF16ToUTF8(std::wstring_view input) {
     const auto size = WideCharToMultiByte(CP_UTF8, 0, input.data(), static_cast<int>(input.size()),
                                           nullptr, 0, nullptr, nullptr);
     if (size == 0) {
-        return "";
+        return {};
     }
 
     std::string output(size, '\0');
@@ -200,49 +193,31 @@ std::string UTF16ToUTF8(const std::wstring& input) {
     return output;
 }
 
-std::wstring UTF8ToUTF16W(const std::string& input) {
+std::wstring UTF8ToUTF16W(std::string_view input) {
     return CPToUTF16(CP_UTF8, input);
 }
 
 #endif
 
-std::string StringFromFixedZeroTerminatedBuffer(const char* buffer, std::size_t max_len) {
-    std::size_t len = 0;
-    while (len < max_len && buffer[len] != '\0')
-        ++len;
+std::u16string U16StringFromBuffer(const u16* input, std::size_t length) {
+    return std::u16string(reinterpret_cast<const char16_t*>(input), length);
+}
 
-    return std::string(buffer, len);
+std::string StringFromFixedZeroTerminatedBuffer(std::string_view buffer, std::size_t max_len) {
+    std::size_t len = 0;
+    while (len < buffer.length() && len < max_len && buffer[len] != '\0') {
+        ++len;
+    }
+    return std::string(buffer.begin(), buffer.begin() + len);
 }
 
 std::u16string UTF16StringFromFixedZeroTerminatedBuffer(std::u16string_view buffer,
                                                         std::size_t max_len) {
     std::size_t len = 0;
-    while (len < max_len && buffer[len] != '\0')
+    while (len < buffer.length() && len < max_len && buffer[len] != '\0') {
         ++len;
-
-    return std::u16string(buffer.begin(), buffer.begin() + len);
-}
-
-const char* TrimSourcePath(const char* path, const char* root) {
-    const char* p = path;
-
-    while (*p != '\0') {
-        const char* next_slash = p;
-        while (*next_slash != '\0' && *next_slash != '/' && *next_slash != '\\') {
-            ++next_slash;
-        }
-
-        bool is_src = Common::ComparePartialString(p, next_slash, root);
-        p = next_slash;
-
-        if (*p != '\0') {
-            ++p;
-        }
-        if (is_src) {
-            path = p;
-        }
     }
-    return path;
+    return std::u16string(buffer.begin(), buffer.begin() + len);
 }
 
 } // namespace Common

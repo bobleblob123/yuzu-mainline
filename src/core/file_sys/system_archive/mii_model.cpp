@@ -1,9 +1,8 @@
-// Copyright 2019 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "core/file_sys/system_archive/mii_model.h"
-#include "core/file_sys/vfs_vector.h"
+#include "core/file_sys/vfs/vfs_vector.h"
 
 namespace FileSys::SystemArchive {
 
@@ -27,20 +26,14 @@ VirtualDir MiiModel() {
     auto out = std::make_shared<VectorVfsDirectory>(std::vector<VirtualFile>{},
                                                     std::vector<VirtualDir>{}, "data");
 
-    out->AddFile(std::make_shared<ArrayVfsFile<MiiModelData::TEXTURE_LOW_LINEAR.size()>>(
-        MiiModelData::TEXTURE_LOW_LINEAR, "NXTextureLowLinear.dat"));
-    out->AddFile(std::make_shared<ArrayVfsFile<MiiModelData::TEXTURE_LOW_SRGB.size()>>(
-        MiiModelData::TEXTURE_LOW_SRGB, "NXTextureLowSRGB.dat"));
-    out->AddFile(std::make_shared<ArrayVfsFile<MiiModelData::TEXTURE_MID_LINEAR.size()>>(
-        MiiModelData::TEXTURE_MID_LINEAR, "NXTextureMidLinear.dat"));
-    out->AddFile(std::make_shared<ArrayVfsFile<MiiModelData::TEXTURE_MID_SRGB.size()>>(
-        MiiModelData::TEXTURE_MID_SRGB, "NXTextureMidSRGB.dat"));
-    out->AddFile(std::make_shared<ArrayVfsFile<MiiModelData::SHAPE_HIGH.size()>>(
-        MiiModelData::SHAPE_HIGH, "ShapeHigh.dat"));
-    out->AddFile(std::make_shared<ArrayVfsFile<MiiModelData::SHAPE_MID.size()>>(
-        MiiModelData::SHAPE_MID, "ShapeMid.dat"));
+    out->AddFile(MakeArrayFile(MiiModelData::TEXTURE_LOW_LINEAR, "NXTextureLowLinear.dat"));
+    out->AddFile(MakeArrayFile(MiiModelData::TEXTURE_LOW_SRGB, "NXTextureLowSRGB.dat"));
+    out->AddFile(MakeArrayFile(MiiModelData::TEXTURE_MID_LINEAR, "NXTextureMidLinear.dat"));
+    out->AddFile(MakeArrayFile(MiiModelData::TEXTURE_MID_SRGB, "NXTextureMidSRGB.dat"));
+    out->AddFile(MakeArrayFile(MiiModelData::SHAPE_HIGH, "ShapeHigh.dat"));
+    out->AddFile(MakeArrayFile(MiiModelData::SHAPE_MID, "ShapeMid.dat"));
 
-    return std::move(out);
+    return out;
 }
 
 } // namespace FileSys::SystemArchive

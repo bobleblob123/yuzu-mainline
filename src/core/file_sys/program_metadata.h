@@ -1,15 +1,16 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <array>
 #include <vector>
+
 #include "common/bit_field.h"
+#include "common/common_funcs.h"
 #include "common/common_types.h"
 #include "common/swap.h"
-#include "core/file_sys/vfs.h"
+#include "core/file_sys/vfs/vfs_types.h"
 
 namespace Loader {
 enum class ResultStatus : u16;
@@ -33,6 +34,13 @@ enum class ProgramFilePermission : u64 {
     Everything = 1ULL << 63,
 };
 
+enum class PoolPartition : u32 {
+    Application = 0,
+    Applet = 1,
+    System = 2,
+    SystemNonSecure = 3,
+};
+
 /**
  * Helper which implements an interface to parse Program Description Metadata (NPDM)
  * Data can either be loaded from a file path or with data and an offset into it.
@@ -44,12 +52,24 @@ public:
     ProgramMetadata();
     ~ProgramMetadata();
 
-    Loader::ResultStatus Load(VirtualFile file);
+    ProgramMetadata(const ProgramMetadata&) = default;
+    ProgramMetadata& operator=(const ProgramMetadata&) = default;
 
-    // Load from parameters instead of NPDM file, used for KIP
-    void LoadManual(bool is_64_bit, ProgramAddressSpaceType address_space, u8 main_thread_prio,
-                    u8 main_thread_core, u32 main_thread_stack_size, u64 title_id,
-                    u64 filesystem_permissions, KernelCapabilityDescriptors capabilities);
+    ProgramMetadata(ProgramMetadata&&) = default;
+    ProgramMetadata& operator=(ProgramMetadata&&) = default;
+
+    /// Gets a default ProgramMetadata configuration, should only be used for homebrew formats where
+    /// we do not have an NPDM file
+    static ProgramMetadata GetDefault();
+
+    Loader::ResultStatus Load(VirtualFile file);
+    Loader::ResultStatus Reload(VirtualFile file);
+
+    /// Load from parameters instead of NPDM file, used for KIP
+    void LoadManual(bool is_64_bit, ProgramAddressSpaceType address_space, s32 main_thread_prio,
+                    u32 main_thread_core, u32 main_thread_stack_size, u64 title_id,
+                    u64 filesystem_permissions, u32 system_resource_size,
+                    KernelCapabilityDescriptors capabilities);
 
     bool Is64BitProgram() const;
     ProgramAddressSpaceType GetAddressSpaceType() const;
@@ -59,7 +79,11 @@ public:
     u64 GetTitleID() const;
     u64 GetFilesystemPermissions() const;
     u32 GetSystemResourceSize() const;
+    PoolPartition GetPoolPartition() const;
     const KernelCapabilityDescriptors& GetKernelCapabilities() const;
+    const std::array<u8, 0x10>& GetName() const {
+        return npdm_header.application_name;
+    }
 
     void Print() const;
 
@@ -100,8 +124,9 @@ private:
         union {
             u32 flags;
 
-            BitField<0, 1, u32> is_retail;
-            BitField<1, 31, u32> flags_unk;
+            BitField<0, 1, u32> production_flag;
+            BitField<1, 1, u32> unqualified_approval;
+            BitField<2, 4, PoolPartition> pool_partition;
         };
         u64_le title_id_min;
         u64_le title_id_max;
@@ -132,20 +157,18 @@ private:
 
     static_assert(sizeof(AciHeader) == 0x40, "ACI0 header structure size is wrong");
 
-#pragma pack(push, 1)
-
+    // FileAccessControl and FileAccessHeader need loaded per-component: this layout does not
+    // reflect the real layout to avoid reference binding to misaligned addresses
     struct FileAccessControl {
         u8 version;
-        INSERT_PADDING_BYTES(3);
+        // 3 padding bytes
         u64_le permissions;
         std::array<u8, 0x20> unknown;
     };
 
-    static_assert(sizeof(FileAccessControl) == 0x2C, "FS access control structure size is wrong");
-
     struct FileAccessHeader {
         u8 version;
-        INSERT_PADDING_BYTES(3);
+        // 3 padding bytes
         u64_le permissions;
         u32_le unk_offset;
         u32_le unk_size;
@@ -153,18 +176,14 @@ private:
         u32_le unk_size_2;
     };
 
-    static_assert(sizeof(FileAccessHeader) == 0x1C, "FS access header structure size is wrong");
+    Header npdm_header{};
+    AciHeader aci_header{};
+    AcidHeader acid_header{};
 
-#pragma pack(pop)
+    FileAccessControl acid_file_access{};
+    FileAccessHeader aci_file_access{};
 
-    Header npdm_header;
-    AciHeader aci_header;
-    AcidHeader acid_header;
-
-    FileAccessControl acid_file_access;
-    FileAccessHeader aci_file_access;
-
-    KernelCapabilityDescriptors aci_kernel_capabilities;
+    KernelCapabilityDescriptors aci_kernel_capabilities{};
 };
 
 } // namespace FileSys

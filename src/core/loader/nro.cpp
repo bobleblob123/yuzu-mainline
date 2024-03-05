@@ -1,28 +1,30 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <utility>
 #include <vector>
 
 #include "common/common_funcs.h"
 #include "common/common_types.h"
-#include "common/file_util.h"
 #include "common/logging/log.h"
+#include "common/settings.h"
 #include "common/swap.h"
 #include "core/core.h"
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/romfs_factory.h"
-#include "core/file_sys/vfs_offset.h"
-#include "core/gdbstub/gdbstub.h"
+#include "core/file_sys/vfs/vfs_offset.h"
 #include "core/hle/kernel/code_set.h"
-#include "core/hle/kernel/process.h"
-#include "core/hle/kernel/vm_manager.h"
+#include "core/hle/kernel/k_page_table.h"
+#include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_thread.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/loader/nro.h"
 #include "core/loader/nso.h"
 #include "core/memory.h"
-#include "core/settings.h"
+
+#ifdef HAS_NCE
+#include "core/arm/nce/patcher.h"
+#endif
 
 namespace Loader {
 
@@ -35,7 +37,8 @@ static_assert(sizeof(NroSegmentHeader) == 0x8, "NroSegmentHeader has incorrect s
 struct NroHeader {
     INSERT_PADDING_BYTES(0x4);
     u32_le module_header_offset;
-    INSERT_PADDING_BYTES(0x8);
+    u32 magic_ext1;
+    u32 magic_ext2;
     u32_le magic;
     INSERT_PADDING_BYTES(0x4);
     u32_le file_size;
@@ -72,7 +75,7 @@ struct AssetHeader {
 };
 static_assert(sizeof(AssetHeader) == 0x38, "AssetHeader has incorrect size.");
 
-AppLoader_NRO::AppLoader_NRO(FileSys::VirtualFile file) : AppLoader(file) {
+AppLoader_NRO::AppLoader_NRO(FileSys::VirtualFile file_) : AppLoader(std::move(file_)) {
     NroHeader nro_header{};
     if (file->ReadObject(&nro_header) != sizeof(NroHeader)) {
         return;
@@ -114,10 +117,10 @@ AppLoader_NRO::AppLoader_NRO(FileSys::VirtualFile file) : AppLoader(file) {
 
 AppLoader_NRO::~AppLoader_NRO() = default;
 
-FileType AppLoader_NRO::IdentifyType(const FileSys::VirtualFile& file) {
+FileType AppLoader_NRO::IdentifyType(const FileSys::VirtualFile& nro_file) {
     // Read NSO header
     NroHeader nro_header{};
-    if (sizeof(NroHeader) != file->ReadObject(&nro_header)) {
+    if (sizeof(NroHeader) != nro_file->ReadObject(&nro_header)) {
         return FileType::Error;
     }
     if (nro_header.magic == Common::MakeMagic('N', 'R', 'O', '0')) {
@@ -126,12 +129,22 @@ FileType AppLoader_NRO::IdentifyType(const FileSys::VirtualFile& file) {
     return FileType::Error;
 }
 
-static constexpr u32 PageAlignSize(u32 size) {
-    return (size + Memory::PAGE_MASK) & ~Memory::PAGE_MASK;
+bool AppLoader_NRO::IsHomebrew() {
+    // Read NSO header
+    NroHeader nro_header{};
+    if (sizeof(NroHeader) != file->ReadObject(&nro_header)) {
+        return false;
+    }
+    return nro_header.magic_ext1 == Common::MakeMagic('H', 'O', 'M', 'E') &&
+           nro_header.magic_ext2 == Common::MakeMagic('B', 'R', 'E', 'W');
 }
 
-static bool LoadNroImpl(Kernel::Process& process, const std::vector<u8>& data,
-                        const std::string& name, VAddr load_base) {
+static constexpr u32 PageAlignSize(u32 size) {
+    return static_cast<u32>((size + Core::Memory::YUZU_PAGEMASK) & ~Core::Memory::YUZU_PAGEMASK);
+}
+
+static bool LoadNroImpl(Core::System& system, Kernel::KProcess& process,
+                        const std::vector<u8>& data) {
     if (data.size() < sizeof(NroHeader)) {
         return {};
     }
@@ -157,8 +170,8 @@ static bool LoadNroImpl(Kernel::Process& process, const std::vector<u8>& data,
         codeset.segments[i].size = PageAlignSize(nro_header.segments[i].size);
     }
 
-    if (!Settings::values.program_args.empty()) {
-        const auto arg_data = Settings::values.program_args;
+    if (!Settings::values.program_args.GetValue().empty()) {
+        const auto arg_data = Settings::values.program_args.GetValue();
         codeset.DataSegment().size += NSO_ARGUMENT_DATA_ALLOCATION_SIZE;
         NSOArgumentHeader args_header{
             NSO_ARGUMENT_DATA_ALLOCATION_SIZE, static_cast<u32_le>(arg_data.size()), {}};
@@ -186,42 +199,92 @@ static bool LoadNroImpl(Kernel::Process& process, const std::vector<u8>& data,
 
     codeset.DataSegment().size += bss_size;
     program_image.resize(static_cast<u32>(program_image.size()) + bss_size);
+    size_t image_size = program_image.size();
+
+#ifdef HAS_NCE
+    const auto& code = codeset.CodeSegment();
+
+    // NROs always have a 39-bit address space.
+    Settings::SetNceEnabled(true);
+
+    // Create NCE patcher
+    Core::NCE::Patcher patch{};
+
+    if (Settings::IsNceEnabled()) {
+        // Patch SVCs and MRS calls in the guest code
+        patch.PatchText(program_image, code);
+
+        // We only support PostData patching for NROs.
+        ASSERT(patch.GetPatchMode() == Core::NCE::PatchMode::PostData);
+
+        // Update patch section.
+        auto& patch_segment = codeset.PatchSegment();
+        patch_segment.addr = image_size;
+        patch_segment.size = static_cast<u32>(patch.GetSectionSize());
+
+        // Add patch section size to the module size.
+        image_size += patch_segment.size;
+    }
+#endif
+
+    // Enable direct memory mapping in case of NCE.
+    const u64 fastmem_base = [&]() -> size_t {
+        if (Settings::IsNceEnabled()) {
+            auto& buffer = system.DeviceMemory().buffer;
+            buffer.EnableDirectMappedAddress();
+            return reinterpret_cast<u64>(buffer.VirtualBasePointer());
+        }
+        return 0;
+    }();
+
+    // Setup the process code layout
+    if (process
+            .LoadFromMetadata(FileSys::ProgramMetadata::GetDefault(), image_size, fastmem_base,
+                              false)
+            .IsError()) {
+        return false;
+    }
+
+    // Relocate code patch and copy to the program_image if running under NCE.
+    // This needs to be after LoadFromMetadata so we can use the process entry point.
+#ifdef HAS_NCE
+    if (Settings::IsNceEnabled()) {
+        patch.RelocateAndCopy(process.GetEntryPoint(), code, program_image,
+                              &process.GetPostHandlers());
+    }
+#endif
 
     // Load codeset for current process
     codeset.memory = std::move(program_image);
-    process.LoadModule(std::move(codeset), load_base);
-
-    // Register module with GDBStub
-    GDBStub::RegisterModule(name, load_base, load_base);
+    process.LoadModule(std::move(codeset), process.GetEntryPoint());
 
     return true;
 }
 
-bool AppLoader_NRO::LoadNro(Kernel::Process& process, const FileSys::VfsFile& file,
-                            VAddr load_base) {
-    return LoadNroImpl(process, file.ReadAllBytes(), file.GetName(), load_base);
+bool AppLoader_NRO::LoadNro(Core::System& system, Kernel::KProcess& process,
+                            const FileSys::VfsFile& nro_file) {
+    return LoadNroImpl(system, process, nro_file.ReadAllBytes());
 }
 
-AppLoader_NRO::LoadResult AppLoader_NRO::Load(Kernel::Process& process) {
+AppLoader_NRO::LoadResult AppLoader_NRO::Load(Kernel::KProcess& process, Core::System& system) {
     if (is_loaded) {
         return {ResultStatus::ErrorAlreadyLoaded, {}};
     }
 
-    // Load NRO
-    const VAddr base_address = process.VMManager().GetCodeRegionBaseAddress();
-
-    if (!LoadNro(process, *file, base_address)) {
+    if (!LoadNro(system, process, *file)) {
         return {ResultStatus::ErrorLoadingNRO, {}};
     }
 
-    if (romfs != nullptr) {
-        Core::System::GetInstance().GetFileSystemController().RegisterRomFS(
-            std::make_unique<FileSys::RomFSFactory>(*this));
-    }
+    u64 program_id{};
+    ReadProgramId(program_id);
+    system.GetFileSystemController().RegisterProcess(
+        process.GetProcessId(), program_id,
+        std::make_unique<FileSys::RomFSFactory>(*this, system.GetContentProvider(),
+                                                system.GetFileSystemController()));
 
     is_loaded = true;
-    return {ResultStatus::Success,
-            LoadParameters{Kernel::THREADPRIO_DEFAULT, Memory::DEFAULT_STACK_SIZE}};
+    return {ResultStatus::Success, LoadParameters{Kernel::KThread::DefaultThreadPriority,
+                                                  Core::Memory::DEFAULT_STACK_SIZE}};
 }
 
 ResultStatus AppLoader_NRO::ReadIcon(std::vector<u8>& buffer) {

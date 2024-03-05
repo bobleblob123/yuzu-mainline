@@ -1,168 +1,113 @@
-// Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2014 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <array>
+#include <span>
+#include <string>
 #include <vector>
+
+#include "common/common_funcs.h"
 #include "common/common_types.h"
+#include "core/hardware_properties.h"
+
+#include "core/hle/kernel/svc_types.h"
 
 namespace Common {
 struct PageTable;
 }
 
 namespace Kernel {
-enum class VMAPermission : u8;
-}
+enum class DebugWatchpointType : u8;
+struct DebugWatchpoint;
+class KThread;
+class KProcess;
+} // namespace Kernel
 
 namespace Core {
+using WatchpointArray = std::array<Kernel::DebugWatchpoint, Core::Hardware::NUM_WATCHPOINTS>;
+
+// NOTE: these values match the HaltReason enum in Dynarmic
+enum class HaltReason : u64 {
+    StepThread = 0x00000001,
+    DataAbort = 0x00000004,
+    BreakLoop = 0x02000000,
+    SupervisorCall = 0x04000000,
+    InstructionBreakpoint = 0x08000000,
+    PrefetchAbort = 0x20000000,
+};
+DECLARE_ENUM_FLAG_OPERATORS(HaltReason);
+
+enum class Architecture {
+    AArch64,
+    AArch32,
+};
 
 /// Generic ARMv8 CPU interface
-class ARM_Interface : NonCopyable {
+class ArmInterface {
 public:
-    virtual ~ARM_Interface() {}
+    YUZU_NON_COPYABLE(ArmInterface);
+    YUZU_NON_MOVEABLE(ArmInterface);
 
-    struct ThreadContext {
-        std::array<u64, 31> cpu_registers;
-        u64 sp;
-        u64 pc;
-        u32 pstate;
-        std::array<u8, 4> padding;
-        std::array<u128, 32> vector_registers;
-        u32 fpcr;
-        u32 fpsr;
-        u64 tpidr;
-    };
-    // Internally within the kernel, it expects the AArch64 version of the
-    // thread context to be 800 bytes in size.
-    static_assert(sizeof(ThreadContext) == 0x320);
+    explicit ArmInterface(bool uses_wall_clock) : m_uses_wall_clock{uses_wall_clock} {}
+    virtual ~ArmInterface() = default;
 
-    /// Runs the CPU until an event happens
-    virtual void Run() = 0;
+    // Perform any backend-specific initialization.
+    virtual void Initialize() {}
 
-    /// Step CPU by one instruction
-    virtual void Step() = 0;
+    // Runs the CPU until an event happens.
+    virtual HaltReason RunThread(Kernel::KThread* thread) = 0;
 
-    /// Clear all instruction cache
+    // Runs the CPU for one instruction or until an event happens.
+    virtual HaltReason StepThread(Kernel::KThread* thread) = 0;
+
+    // Admits a backend-specific mechanism to lock the thread context.
+    virtual void LockThread(Kernel::KThread* thread) {}
+    virtual void UnlockThread(Kernel::KThread* thread) {}
+
+    // Clear the entire instruction cache for this CPU.
     virtual void ClearInstructionCache() = 0;
 
-    /// Notifies CPU emulation that the current page table has changed.
-    ///
-    /// @param new_page_table                 The new page table.
-    /// @param new_address_space_size_in_bits The new usable size of the address space in bits.
-    ///                                       This can be either 32, 36, or 39 on official software.
-    ///
-    virtual void PageTableChanged(Common::PageTable& new_page_table,
-                                  std::size_t new_address_space_size_in_bits) = 0;
+    // Clear a range of the instruction cache for this CPU.
+    virtual void InvalidateCacheRange(u64 addr, std::size_t size) = 0;
 
-    /**
-     * Set the Program Counter to an address
-     * @param addr Address to set PC to
-     */
-    virtual void SetPC(u64 addr) = 0;
+    // Get the current architecture.
+    // This returns AArch64 when PSTATE.nRW == 0 and AArch32 when PSTATE.nRW == 1.
+    virtual Architecture GetArchitecture() const = 0;
 
-    /*
-     * Get the current Program Counter
-     * @return Returns current PC
-     */
-    virtual u64 GetPC() const = 0;
+    // Context accessors.
+    // These should not be called if the CPU is running.
+    virtual void GetContext(Kernel::Svc::ThreadContext& ctx) const = 0;
+    virtual void SetContext(const Kernel::Svc::ThreadContext& ctx) = 0;
+    virtual void SetTpidrroEl0(u64 value) = 0;
 
-    /**
-     * Get an ARM register
-     * @param index Register index
-     * @return Returns the value in the register
-     */
-    virtual u64 GetReg(int index) const = 0;
+    virtual void GetSvcArguments(std::span<uint64_t, 8> args) const = 0;
+    virtual void SetSvcArguments(std::span<const uint64_t, 8> args) = 0;
+    virtual u32 GetSvcNumber() const = 0;
 
-    /**
-     * Set an ARM register
-     * @param index Register index
-     * @param value Value to set register to
-     */
-    virtual void SetReg(int index, u64 value) = 0;
+    void SetWatchpointArray(const WatchpointArray* watchpoints) {
+        m_watchpoints = watchpoints;
+    }
 
-    /**
-     * Gets the value of a specified vector register.
-     *
-     * @param index The index of the vector register.
-     * @return the value within the vector register.
-     */
-    virtual u128 GetVectorReg(int index) const = 0;
+    // Signal an interrupt for execution to halt as soon as possible.
+    // It is safe to call this if the CPU is not running.
+    virtual void SignalInterrupt(Kernel::KThread* thread) = 0;
 
-    /**
-     * Sets a given value into a vector register.
-     *
-     * @param index The index of the vector register.
-     * @param value The new value to place in the register.
-     */
-    virtual void SetVectorReg(int index, u128 value) = 0;
+    // Stack trace generation.
+    void LogBacktrace(Kernel::KProcess* process) const;
 
-    /**
-     * Get the current PSTATE register
-     * @return Returns the value of the PSTATE register
-     */
-    virtual u32 GetPSTATE() const = 0;
+    // Debug functionality.
+    virtual const Kernel::DebugWatchpoint* HaltedWatchpoint() const = 0;
+    virtual void RewindBreakpointInstruction() = 0;
 
-    /**
-     * Set the current PSTATE register
-     * @param pstate Value to set PSTATE to
-     */
-    virtual void SetPSTATE(u32 pstate) = 0;
+protected:
+    const Kernel::DebugWatchpoint* MatchingWatchpoint(
+        u64 addr, u64 size, Kernel::DebugWatchpointType access_type) const;
 
-    virtual VAddr GetTlsAddress() const = 0;
-
-    virtual void SetTlsAddress(VAddr address) = 0;
-
-    /**
-     * Gets the value within the TPIDR_EL0 (read/write software thread ID) register.
-     *
-     * @return the value within the register.
-     */
-    virtual u64 GetTPIDR_EL0() const = 0;
-
-    /**
-     * Sets a new value within the TPIDR_EL0 (read/write software thread ID) register.
-     *
-     * @param value The new value to place in the register.
-     */
-    virtual void SetTPIDR_EL0(u64 value) = 0;
-
-    /**
-     * Saves the current CPU context
-     * @param ctx Thread context to save
-     */
-    virtual void SaveContext(ThreadContext& ctx) = 0;
-
-    /**
-     * Loads a CPU context
-     * @param ctx Thread context to load
-     */
-    virtual void LoadContext(const ThreadContext& ctx) = 0;
-
-    /// Clears the exclusive monitor's state.
-    virtual void ClearExclusiveState() = 0;
-
-    /// Prepare core for thread reschedule (if needed to correctly handle state)
-    virtual void PrepareReschedule() = 0;
-
-    struct BacktraceEntry {
-        std::string module;
-        u64 address;
-        u64 original_address;
-        u64 offset;
-        std::string name;
-    };
-
-    std::vector<BacktraceEntry> GetBacktrace() const;
-
-    /// fp (= r29) points to the last frame record.
-    /// Note that this is the frame record for the *previous* frame, not the current one.
-    /// Note we need to subtract 4 from our last read to get the proper address
-    /// Frame records are two words long:
-    /// fp+0 : pointer to previous frame record
-    /// fp+8 : value of lr for frame
-    void LogBacktrace() const;
+protected:
+    const WatchpointArray* m_watchpoints{};
+    bool m_uses_wall_clock{};
 };
 
 } // namespace Core

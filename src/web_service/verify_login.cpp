@@ -1,11 +1,10 @@
-// Copyright 2017 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2017 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <json.hpp>
-#include "common/web_result.h"
+#include <nlohmann/json.hpp>
 #include "web_service/verify_login.h"
 #include "web_service/web_backend.h"
+#include "web_service/web_result.h"
 
 namespace WebService {
 
@@ -22,7 +21,7 @@ bool VerifyLogin(const std::string& host, const std::string& username, const std
         return username.empty();
     }
 
-    return username == *iter;
+    return *iter == username;
 }
 
 } // namespace WebService

@@ -1,19 +1,20 @@
-// Copyright 2019 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstring>
 #include "core/file_sys/kernel_executable.h"
 #include "core/file_sys/program_metadata.h"
-#include "core/gdbstub/gdbstub.h"
 #include "core/hle/kernel/code_set.h"
-#include "core/hle/kernel/process.h"
+#include "core/hle/kernel/k_page_table.h"
+#include "core/hle/kernel/k_process.h"
 #include "core/loader/kip.h"
+#include "core/memory.h"
 
 namespace Loader {
 
 namespace {
 constexpr u32 PageAlignSize(u32 size) {
-    return (size + Memory::PAGE_MASK) & ~Memory::PAGE_MASK;
+    return static_cast<u32>((size + Core::Memory::YUZU_PAGEMASK) & ~Core::Memory::YUZU_PAGEMASK);
 }
 } // Anonymous namespace
 
@@ -22,9 +23,9 @@ AppLoader_KIP::AppLoader_KIP(FileSys::VirtualFile file_)
 
 AppLoader_KIP::~AppLoader_KIP() = default;
 
-FileType AppLoader_KIP::IdentifyType(const FileSys::VirtualFile& file) {
+FileType AppLoader_KIP::IdentifyType(const FileSys::VirtualFile& in_file) {
     u32_le magic{};
-    if (file->GetSize() < sizeof(u32) || file->ReadObject(&magic) != sizeof(u32)) {
+    if (in_file->GetSize() < sizeof(u32) || in_file->ReadObject(&magic) != sizeof(u32)) {
         return FileType::Error;
     }
 
@@ -40,7 +41,8 @@ FileType AppLoader_KIP::GetFileType() const {
                                                                          : FileType::Error;
 }
 
-AppLoader::LoadResult AppLoader_KIP::Load(Kernel::Process& process) {
+AppLoader::LoadResult AppLoader_KIP::Load(Kernel::KProcess& process,
+                                          [[maybe_unused]] Core::System& system) {
     if (is_loaded) {
         return {ResultStatus::ErrorAlreadyLoaded, {}};
     }
@@ -53,10 +55,10 @@ AppLoader::LoadResult AppLoader_KIP::Load(Kernel::Process& process) {
         return {kip->GetStatus(), {}};
     }
 
-    const auto get_kip_address_space_type = [](const auto& kip) {
-        return kip.Is64Bit()
-                   ? (kip.Is39BitAddressSpace() ? FileSys::ProgramAddressSpaceType::Is39Bit
-                                                : FileSys::ProgramAddressSpaceType::Is36Bit)
+    const auto get_kip_address_space_type = [](const auto& kip_type) {
+        return kip_type.Is64Bit()
+                   ? (kip_type.Is39BitAddressSpace() ? FileSys::ProgramAddressSpaceType::Is39Bit
+                                                     : FileSys::ProgramAddressSpaceType::Is36Bit)
                    : FileSys::ProgramAddressSpaceType::Is32Bit;
     };
 
@@ -65,9 +67,9 @@ AppLoader::LoadResult AppLoader_KIP::Load(Kernel::Process& process) {
     FileSys::ProgramMetadata metadata;
     metadata.LoadManual(kip->Is64Bit(), address_space, kip->GetMainThreadPriority(),
                         kip->GetMainThreadCpuCore(), kip->GetMainThreadStackSize(),
-                        kip->GetTitleID(), 0xFFFFFFFFFFFFFFFF, kip->GetKernelCapabilities());
+                        kip->GetTitleID(), 0xFFFFFFFFFFFFFFFF, 0x1FE00000,
+                        kip->GetKernelCapabilities());
 
-    const VAddr base_address = process.VMManager().GetCodeRegionBaseAddress();
     Kernel::CodeSet codeset;
     Kernel::PhysicalMemory program_image;
 
@@ -76,8 +78,8 @@ AppLoader::LoadResult AppLoader_KIP::Load(Kernel::Process& process) {
         segment.addr = offset;
         segment.offset = offset;
         segment.size = PageAlignSize(static_cast<u32>(data.size()));
-        program_image.resize(offset);
-        program_image.insert(program_image.end(), data.begin(), data.end());
+        program_image.resize(offset + data.size());
+        std::memcpy(program_image.data() + offset, data.data(), data.size());
     };
 
     load_segment(codeset.CodeSegment(), kip->GetTextSection(), kip->GetTextOffset());
@@ -87,9 +89,16 @@ AppLoader::LoadResult AppLoader_KIP::Load(Kernel::Process& process) {
     program_image.resize(PageAlignSize(kip->GetBSSOffset()) + kip->GetBSSSize());
     codeset.DataSegment().size += kip->GetBSSSize();
 
-    GDBStub::RegisterModule(kip->GetName(), base_address, base_address + program_image.size());
+    // Setup the process code layout
+    if (process
+            .LoadFromMetadata(FileSys::ProgramMetadata::GetDefault(), program_image.size(), 0,
+                              false)
+            .IsError()) {
+        return {ResultStatus::ErrorNotInitialized, {}};
+    }
 
     codeset.memory = std::move(program_image);
+    const VAddr base_address = GetInteger(process.GetEntryPoint());
     process.LoadModule(std::move(codeset), base_address);
 
     LOG_DEBUG(Loader, "loaded module {} @ 0x{:X}", kip->GetName(), base_address);

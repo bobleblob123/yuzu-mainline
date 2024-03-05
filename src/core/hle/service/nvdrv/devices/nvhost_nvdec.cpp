@@ -1,108 +1,91 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <cstring>
-
+#include "audio_core/audio_core.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "core/core.h"
+#include "core/hle/service/nvdrv/core/container.h"
+#include "core/hle/service/nvdrv/devices/ioctl_serialization.h"
 #include "core/hle/service/nvdrv/devices/nvhost_nvdec.h"
+#include "video_core/renderer_base.h"
 
 namespace Service::Nvidia::Devices {
 
-nvhost_nvdec::nvhost_nvdec(Core::System& system) : nvdevice(system) {}
+nvhost_nvdec::nvhost_nvdec(Core::System& system_, NvCore::Container& core_)
+    : nvhost_nvdec_common{system_, core_, NvCore::ChannelType::NvDec} {}
 nvhost_nvdec::~nvhost_nvdec() = default;
 
-u32 nvhost_nvdec::ioctl(Ioctl command, const std::vector<u8>& input, const std::vector<u8>& input2,
-                        std::vector<u8>& output, std::vector<u8>& output2, IoctlCtrl& ctrl,
-                        IoctlVersion version) {
-    LOG_DEBUG(Service_NVDRV, "called, command=0x{:08X}, input_size=0x{:X}, output_size=0x{:X}",
-              command.raw, input.size(), output.size());
-
-    switch (static_cast<IoctlCommand>(command.raw)) {
-    case IoctlCommand::IocSetNVMAPfdCommand:
-        return SetNVMAPfd(input, output);
-    case IoctlCommand::IocSubmit:
-        return Submit(input, output);
-    case IoctlCommand::IocGetSyncpoint:
-        return GetSyncpoint(input, output);
-    case IoctlCommand::IocGetWaitbase:
-        return GetWaitbase(input, output);
-    case IoctlCommand::IocMapBuffer:
-        return MapBuffer(input, output);
-    case IoctlCommand::IocMapBufferEx:
-        return MapBufferEx(input, output);
-    case IoctlCommand::IocUnmapBufferEx:
-        return UnmapBufferEx(input, output);
+NvResult nvhost_nvdec::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+                              std::span<u8> output) {
+    switch (command.group) {
+    case 0x0:
+        switch (command.cmd) {
+        case 0x1: {
+            auto& host1x_file = core.Host1xDeviceFile();
+            if (!host1x_file.fd_to_id.contains(fd)) {
+                host1x_file.fd_to_id[fd] = host1x_file.nvdec_next_id++;
+            }
+            return WrapFixedVariable(this, &nvhost_nvdec::Submit, input, output, fd);
+        }
+        case 0x2:
+            return WrapFixed(this, &nvhost_nvdec::GetSyncpoint, input, output);
+        case 0x3:
+            return WrapFixed(this, &nvhost_nvdec::GetWaitbase, input, output);
+        case 0x7:
+            return WrapFixed(this, &nvhost_nvdec::SetSubmitTimeout, input, output);
+        case 0x9:
+            return WrapFixedVariable(this, &nvhost_nvdec::MapBuffer, input, output, fd);
+        case 0xa:
+            return WrapFixedVariable(this, &nvhost_nvdec::UnmapBuffer, input, output);
+        default:
+            break;
+        }
+        break;
+    case 'H':
+        switch (command.cmd) {
+        case 0x1:
+            return WrapFixed(this, &nvhost_nvdec::SetNVMAPfd, input, output);
+        default:
+            break;
+        }
+        break;
     }
 
-    UNIMPLEMENTED_MSG("Unimplemented ioctl");
-    return 0;
+    UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+    return NvResult::NotImplemented;
 }
 
-u32 nvhost_nvdec::SetNVMAPfd(const std::vector<u8>& input, std::vector<u8>& output) {
-    IoctlSetNvmapFD params{};
-    std::memcpy(&params, input.data(), sizeof(IoctlSetNvmapFD));
-    LOG_DEBUG(Service_NVDRV, "called, fd={}", params.nvmap_fd);
-
-    nvmap_fd = params.nvmap_fd;
-    return 0;
+NvResult nvhost_nvdec::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+                              std::span<const u8> inline_input, std::span<u8> output) {
+    UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+    return NvResult::NotImplemented;
 }
 
-u32 nvhost_nvdec::Submit(const std::vector<u8>& input, std::vector<u8>& output) {
-    IoctlSubmit params{};
-    std::memcpy(&params, input.data(), sizeof(IoctlSubmit));
-    LOG_WARNING(Service_NVDRV, "(STUBBED) called");
-    std::memcpy(output.data(), &params, sizeof(IoctlSubmit));
-    return 0;
+NvResult nvhost_nvdec::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+                              std::span<u8> output, std::span<u8> inline_output) {
+    UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+    return NvResult::NotImplemented;
 }
 
-u32 nvhost_nvdec::GetSyncpoint(const std::vector<u8>& input, std::vector<u8>& output) {
-    IoctlGetSyncpoint params{};
-    std::memcpy(&params, input.data(), sizeof(IoctlGetSyncpoint));
-    LOG_INFO(Service_NVDRV, "called, unknown=0x{:X}", params.unknown);
-    params.value = 0; // Seems to be hard coded at 0
-    std::memcpy(output.data(), &params, sizeof(IoctlGetSyncpoint));
-    return 0;
+void nvhost_nvdec::OnOpen(NvCore::SessionId session_id, DeviceFD fd) {
+    LOG_INFO(Service_NVDRV, "NVDEC video stream started");
+    system.SetNVDECActive(true);
+    sessions[fd] = session_id;
 }
 
-u32 nvhost_nvdec::GetWaitbase(const std::vector<u8>& input, std::vector<u8>& output) {
-    IoctlGetWaitbase params{};
-    std::memcpy(&params, input.data(), sizeof(IoctlGetWaitbase));
-    LOG_INFO(Service_NVDRV, "called, unknown=0x{:X}", params.unknown);
-    params.value = 0; // Seems to be hard coded at 0
-    std::memcpy(output.data(), &params, sizeof(IoctlGetWaitbase));
-    return 0;
-}
-
-u32 nvhost_nvdec::MapBuffer(const std::vector<u8>& input, std::vector<u8>& output) {
-    IoctlMapBuffer params{};
-    std::memcpy(&params, input.data(), sizeof(IoctlMapBuffer));
-    LOG_WARNING(Service_NVDRV, "(STUBBED) called with address={:08X}{:08X}", params.address_2,
-                params.address_1);
-    params.address_1 = 0;
-    params.address_2 = 0;
-    std::memcpy(output.data(), &params, sizeof(IoctlMapBuffer));
-    return 0;
-}
-
-u32 nvhost_nvdec::MapBufferEx(const std::vector<u8>& input, std::vector<u8>& output) {
-    IoctlMapBufferEx params{};
-    std::memcpy(&params, input.data(), sizeof(IoctlMapBufferEx));
-    LOG_WARNING(Service_NVDRV, "(STUBBED) called with address={:08X}{:08X}", params.address_2,
-                params.address_1);
-    params.address_1 = 0;
-    params.address_2 = 0;
-    std::memcpy(output.data(), &params, sizeof(IoctlMapBufferEx));
-    return 0;
-}
-
-u32 nvhost_nvdec::UnmapBufferEx(const std::vector<u8>& input, std::vector<u8>& output) {
-    IoctlUnmapBufferEx params{};
-    std::memcpy(&params, input.data(), sizeof(IoctlUnmapBufferEx));
-    LOG_WARNING(Service_NVDRV, "(STUBBED) called");
-    std::memcpy(output.data(), &params, sizeof(IoctlUnmapBufferEx));
-    return 0;
+void nvhost_nvdec::OnClose(DeviceFD fd) {
+    LOG_INFO(Service_NVDRV, "NVDEC video stream ended");
+    auto& host1x_file = core.Host1xDeviceFile();
+    const auto iter = host1x_file.fd_to_id.find(fd);
+    if (iter != host1x_file.fd_to_id.end()) {
+        system.GPU().ClearCdmaInstance(iter->second);
+    }
+    system.SetNVDECActive(false);
+    auto it = sessions.find(fd);
+    if (it != sessions.end()) {
+        sessions.erase(it);
+    }
 }
 
 } // namespace Service::Nvidia::Devices

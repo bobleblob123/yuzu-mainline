@@ -1,13 +1,12 @@
-// Copyright 2019 yuzu Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <vector>
 
 #include "common/common_types.h"
-#include "video_core/renderer_vulkan/declarations.h"
+#include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Layout {
 struct FramebufferLayout;
@@ -15,78 +14,128 @@ struct FramebufferLayout;
 
 namespace Vulkan {
 
-class VKDevice;
-class VKFence;
+class Device;
+class Scheduler;
 
-class VKSwapchain {
+class Swapchain {
 public:
-    explicit VKSwapchain(vk::SurfaceKHR surface, const VKDevice& device);
-    ~VKSwapchain();
+    explicit Swapchain(VkSurfaceKHR surface, const Device& device, Scheduler& scheduler, u32 width,
+                       u32 height);
+    ~Swapchain();
 
     /// Creates (or recreates) the swapchain with a given size.
-    void Create(u32 width, u32 height);
+    void Create(VkSurfaceKHR surface, u32 width, u32 height);
 
     /// Acquires the next image in the swapchain, waits as needed.
-    void AcquireNextImage();
+    bool AcquireNextImage();
 
-    /// Presents the rendered image to the swapchain. Returns true when the swapchains had to be
-    /// recreated. Takes responsability for the ownership of fence.
-    bool Present(vk::Semaphore render_semaphore, VKFence& fence);
+    /// Presents the rendered image to the swapchain.
+    void Present(VkSemaphore render_semaphore);
 
-    /// Returns true when the framebuffer layout has changed.
-    bool HasFramebufferChanged(const Layout::FramebufferLayout& framebuffer) const;
+    /// Returns true when the swapchain needs to be recreated.
+    bool NeedsRecreation() const {
+        return IsSubOptimal() || NeedsPresentModeUpdate();
+    }
 
-    const vk::Extent2D& GetSize() const {
+    /// Returns true when the swapchain is outdated.
+    bool IsOutDated() const {
+        return is_outdated;
+    }
+
+    /// Returns true when the swapchain is suboptimal.
+    bool IsSubOptimal() const {
+        return is_suboptimal;
+    }
+
+    VkExtent2D GetSize() const {
         return extent;
     }
 
-    u32 GetImageCount() const {
+    std::size_t GetImageCount() const {
         return image_count;
     }
 
-    u32 GetImageIndex() const {
+    std::size_t GetImageIndex() const {
         return image_index;
     }
 
-    vk::Image GetImageIndex(u32 index) const {
+    std::size_t GetFrameIndex() const {
+        return frame_index;
+    }
+
+    VkImage GetImageIndex(std::size_t index) const {
         return images[index];
     }
 
-    vk::ImageView GetImageViewIndex(u32 index) const {
-        return *image_views[index];
+    VkImage CurrentImage() const {
+        return images[image_index];
     }
 
-    vk::Format GetImageFormat() const {
-        return image_format;
+    VkFormat GetImageViewFormat() const {
+        return image_view_format;
+    }
+
+    VkFormat GetImageFormat() const {
+        return surface_format.format;
+    }
+
+    VkSemaphore CurrentPresentSemaphore() const {
+        return *present_semaphores[frame_index];
+    }
+
+    VkSemaphore CurrentRenderSemaphore() const {
+        return *render_semaphores[frame_index];
+    }
+
+    u32 GetWidth() const {
+        return width;
+    }
+
+    u32 GetHeight() const {
+        return height;
+    }
+
+    VkExtent2D GetExtent() const {
+        return extent;
     }
 
 private:
-    void CreateSwapchain(const vk::SurfaceCapabilitiesKHR& capabilities, u32 width, u32 height);
+    void CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities);
     void CreateSemaphores();
     void CreateImageViews();
 
     void Destroy();
 
-    const vk::SurfaceKHR surface;
-    const VKDevice& device;
+    bool NeedsPresentModeUpdate() const;
 
-    UniqueSwapchainKHR swapchain;
+    VkSurfaceKHR surface;
+    const Device& device;
+    Scheduler& scheduler;
 
-    u32 image_count{};
-    std::vector<vk::Image> images;
-    std::vector<UniqueImageView> image_views;
-    std::vector<UniqueFramebuffer> framebuffers;
-    std::vector<VKFence*> fences;
-    std::vector<UniqueSemaphore> present_semaphores;
+    vk::SwapchainKHR swapchain;
+
+    std::size_t image_count{};
+    std::vector<VkImage> images;
+    std::vector<u64> resource_ticks;
+    std::vector<vk::Semaphore> present_semaphores;
+    std::vector<vk::Semaphore> render_semaphores;
+
+    u32 width;
+    u32 height;
 
     u32 image_index{};
     u32 frame_index{};
 
-    vk::Format image_format{};
-    vk::Extent2D extent{};
+    VkFormat image_view_format{};
+    VkExtent2D extent{};
+    VkPresentModeKHR present_mode{};
+    VkSurfaceFormatKHR surface_format{};
+    bool has_imm{false};
+    bool has_mailbox{false};
+    bool has_fifo_relaxed{false};
 
-    u32 current_width{};
-    u32 current_height{};
+    bool is_outdated{};
+    bool is_suboptimal{};
 };
 
 } // namespace Vulkan

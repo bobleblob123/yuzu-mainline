@@ -1,13 +1,14 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include "common/common_types.h"
-#include "core/file_sys/directory.h"
-#include "core/file_sys/vfs.h"
+#include "core/file_sys/fs_directory.h"
+#include "core/file_sys/fs_filesystem.h"
+#include "core/file_sys/vfs/vfs.h"
 #include "core/hle/result.h"
 
 namespace Core {
@@ -16,6 +17,7 @@ class System;
 
 namespace FileSys {
 class BISFactory;
+class NCA;
 class RegisteredCache;
 class RegisteredCacheUnion;
 class PlaceholderCache;
@@ -26,12 +28,11 @@ class XCI;
 
 enum class BisPartitionId : u32;
 enum class ContentRecordType : u8;
-enum class Mode : u32;
 enum class SaveDataSpaceId : u8;
 enum class SaveDataType : u8;
 enum class StorageId : u8;
 
-struct SaveDataDescriptor;
+struct SaveDataAttribute;
 struct SaveDataSize;
 } // namespace FileSys
 
@@ -42,6 +43,9 @@ class ServiceManager;
 } // namespace SM
 
 namespace FileSystem {
+
+class RomFsController;
+class SaveDataController;
 
 enum class ContentStorageId : u32 {
     System,
@@ -54,36 +58,32 @@ enum class ImageDirectoryId : u32 {
     SdCard,
 };
 
+using ProcessId = u64;
+using ProgramId = u64;
+
 class FileSystemController {
 public:
     explicit FileSystemController(Core::System& system_);
     ~FileSystemController();
 
-    ResultCode RegisterRomFS(std::unique_ptr<FileSys::RomFSFactory>&& factory);
-    ResultCode RegisterSaveData(std::unique_ptr<FileSys::SaveDataFactory>&& factory);
-    ResultCode RegisterSDMC(std::unique_ptr<FileSys::SDMCFactory>&& factory);
-    ResultCode RegisterBIS(std::unique_ptr<FileSys::BISFactory>&& factory);
+    Result RegisterProcess(ProcessId process_id, ProgramId program_id,
+                           std::shared_ptr<FileSys::RomFSFactory>&& factory);
+    Result OpenProcess(ProgramId* out_program_id,
+                       std::shared_ptr<SaveDataController>* out_save_data_controller,
+                       std::shared_ptr<RomFsController>* out_romfs_controller,
+                       ProcessId process_id);
+    void SetPackedUpdate(ProcessId process_id, FileSys::VirtualFile update_raw);
 
-    void SetPackedUpdate(FileSys::VirtualFile update_raw);
-    ResultVal<FileSys::VirtualFile> OpenRomFSCurrentProcess() const;
-    ResultVal<FileSys::VirtualFile> OpenRomFS(u64 title_id, FileSys::StorageId storage_id,
-                                              FileSys::ContentRecordType type) const;
-    ResultVal<FileSys::VirtualDir> CreateSaveData(
-        FileSys::SaveDataSpaceId space, const FileSys::SaveDataDescriptor& save_struct) const;
-    ResultVal<FileSys::VirtualDir> OpenSaveData(
-        FileSys::SaveDataSpaceId space, const FileSys::SaveDataDescriptor& save_struct) const;
-    ResultVal<FileSys::VirtualDir> OpenSaveDataSpace(FileSys::SaveDataSpaceId space) const;
-    ResultVal<FileSys::VirtualDir> OpenSDMC() const;
-    ResultVal<FileSys::VirtualDir> OpenBISPartition(FileSys::BisPartitionId id) const;
-    ResultVal<FileSys::VirtualFile> OpenBISPartitionStorage(FileSys::BisPartitionId id) const;
+    std::shared_ptr<SaveDataController> OpenSaveDataController();
+
+    Result OpenSDMC(FileSys::VirtualDir* out_sdmc) const;
+    Result OpenBISPartition(FileSys::VirtualDir* out_bis_partition,
+                            FileSys::BisPartitionId id) const;
+    Result OpenBISPartitionStorage(FileSys::VirtualFile* out_bis_partition_storage,
+                                   FileSys::BisPartitionId id) const;
 
     u64 GetFreeSpaceSize(FileSys::StorageId id) const;
     u64 GetTotalSpaceSize(FileSys::StorageId id) const;
-
-    FileSys::SaveDataSize ReadSaveDataSize(FileSys::SaveDataType type, u64 title_id,
-                                           u128 user_id) const;
-    void WriteSaveDataSize(FileSys::SaveDataType type, u64 title_id, u128 user_id,
-                           FileSys::SaveDataSize new_value) const;
 
     void SetGameCard(FileSys::VirtualFile file);
     FileSys::XCI* GetGameCard() const;
@@ -111,6 +111,7 @@ public:
     FileSys::VirtualDir GetContentDirectory(ContentStorageId id) const;
     FileSys::VirtualDir GetImageDirectory(ImageDirectoryId id) const;
 
+    FileSys::VirtualDir GetSDMCModificationLoadRoot(u64 title_id) const;
     FileSys::VirtualDir GetModificationLoadRoot(u64 title_id) const;
     FileSys::VirtualDir GetModificationDumpRoot(u64 title_id) const;
 
@@ -120,9 +121,20 @@ public:
     // above is called.
     void CreateFactories(FileSys::VfsFilesystem& vfs, bool overwrite = true);
 
+    void Reset();
+
 private:
-    std::unique_ptr<FileSys::RomFSFactory> romfs_factory;
-    std::unique_ptr<FileSys::SaveDataFactory> save_data_factory;
+    std::shared_ptr<FileSys::SaveDataFactory> CreateSaveDataFactory(ProgramId program_id);
+
+    struct Registration {
+        ProgramId program_id;
+        std::shared_ptr<FileSys::RomFSFactory> romfs_factory;
+        std::shared_ptr<FileSys::SaveDataFactory> save_data_factory;
+    };
+
+    std::mutex registration_lock;
+    std::map<ProcessId, Registration> registrations;
+
     std::unique_ptr<FileSys::SDMCFactory> sdmc_factory;
     std::unique_ptr<FileSys::BISFactory> bis_factory;
 
@@ -133,9 +145,9 @@ private:
     Core::System& system;
 };
 
-void InstallInterfaces(Core::System& system);
+void LoopProcess(Core::System& system);
 
-// A class that wraps a VfsDirectory with methods that return ResultVal and ResultCode instead of
+// A class that wraps a VfsDirectory with methods that return ResultVal and Result instead of
 // pointers and booleans. This makes using a VfsDirectory with switch services much easier and
 // avoids repetitive code.
 class VfsDirectoryServiceWrapper {
@@ -154,35 +166,35 @@ public:
      * @param size The size of the new file, filled with zeroes
      * @return Result of the operation
      */
-    ResultCode CreateFile(const std::string& path, u64 size) const;
+    Result CreateFile(const std::string& path, u64 size) const;
 
     /**
      * Delete a file specified by its path
      * @param path Path relative to the archive
      * @return Result of the operation
      */
-    ResultCode DeleteFile(const std::string& path) const;
+    Result DeleteFile(const std::string& path) const;
 
     /**
      * Create a directory specified by its path
      * @param path Path relative to the archive
      * @return Result of the operation
      */
-    ResultCode CreateDirectory(const std::string& path) const;
+    Result CreateDirectory(const std::string& path) const;
 
     /**
      * Delete a directory specified by its path
      * @param path Path relative to the archive
      * @return Result of the operation
      */
-    ResultCode DeleteDirectory(const std::string& path) const;
+    Result DeleteDirectory(const std::string& path) const;
 
     /**
      * Delete a directory specified by its path and anything under it
      * @param path Path relative to the archive
      * @return Result of the operation
      */
-    ResultCode DeleteDirectoryRecursively(const std::string& path) const;
+    Result DeleteDirectoryRecursively(const std::string& path) const;
 
     /**
      * Cleans the specified directory. This is similar to DeleteDirectoryRecursively,
@@ -194,7 +206,7 @@ public:
      *
      * @return Result of the operation.
      */
-    ResultCode CleanDirectoryRecursively(const std::string& path) const;
+    Result CleanDirectoryRecursively(const std::string& path) const;
 
     /**
      * Rename a File specified by its path
@@ -202,7 +214,7 @@ public:
      * @param dest_path Destination path relative to the archive
      * @return Result of the operation
      */
-    ResultCode RenameFile(const std::string& src_path, const std::string& dest_path) const;
+    Result RenameFile(const std::string& src_path, const std::string& dest_path) const;
 
     /**
      * Rename a Directory specified by its path
@@ -210,7 +222,7 @@ public:
      * @param dest_path Destination path relative to the archive
      * @return Result of the operation
      */
-    ResultCode RenameDirectory(const std::string& src_path, const std::string& dest_path) const;
+    Result RenameDirectory(const std::string& src_path, const std::string& dest_path) const;
 
     /**
      * Open a file specified by its path, using the specified mode
@@ -218,20 +230,28 @@ public:
      * @param mode Mode to open the file with
      * @return Opened file, or error code
      */
-    ResultVal<FileSys::VirtualFile> OpenFile(const std::string& path, FileSys::Mode mode) const;
+    Result OpenFile(FileSys::VirtualFile* out_file, const std::string& path,
+                    FileSys::OpenMode mode) const;
 
     /**
      * Open a directory specified by its path
      * @param path Path relative to the archive
      * @return Opened directory, or error code
      */
-    ResultVal<FileSys::VirtualDir> OpenDirectory(const std::string& path);
+    Result OpenDirectory(FileSys::VirtualDir* out_directory, const std::string& path);
 
     /**
      * Get the type of the specified path
      * @return The type of the specified path or error code
      */
-    ResultVal<FileSys::EntryType> GetEntryType(const std::string& path) const;
+    Result GetEntryType(FileSys::DirectoryEntryType* out_entry_type, const std::string& path) const;
+
+    /**
+     * Get the timestamp of the specified path
+     * @return The timestamp of the specified path or error code
+     */
+    Result GetFileTimeStampRaw(FileSys::FileTimeStampRaw* out_time_stamp_raw,
+                               const std::string& path) const;
 
 private:
     FileSys::VirtualDir backing;

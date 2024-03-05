@@ -1,6 +1,5 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
@@ -8,6 +7,10 @@
 #include "common/common_types.h"
 #include "core/file_sys/program_metadata.h"
 #include "core/loader/loader.h"
+
+namespace Core {
+class System;
+}
 
 namespace Loader {
 
@@ -20,32 +23,36 @@ namespace Loader {
 class AppLoader_DeconstructedRomDirectory final : public AppLoader {
 public:
     explicit AppLoader_DeconstructedRomDirectory(FileSys::VirtualFile main_file,
-                                                 bool override_update = false);
+                                                 bool override_update_ = false);
 
     // Overload to accept exefs directory. Must contain 'main' and 'main.npdm'
     explicit AppLoader_DeconstructedRomDirectory(FileSys::VirtualDir directory,
-                                                 bool override_update = false);
+                                                 bool override_update_ = false,
+                                                 bool is_hbl_ = false);
 
     /**
-     * Returns the type of the file
-     * @param file std::shared_ptr<VfsFile> open file
-     * @return FileType found, or FileType::Error if this loader doesn't know it
+     * Identifies whether or not the given file is a deconstructed ROM directory.
+     *
+     * @param dir_file The file to verify.
+     *
+     * @return FileType::DeconstructedRomDirectory, or FileType::Error
+     *         if the file is not a deconstructed ROM directory.
      */
-    static FileType IdentifyType(const FileSys::VirtualFile& file);
+    static FileType IdentifyType(const FileSys::VirtualFile& dir_file);
 
     FileType GetFileType() const override {
         return IdentifyType(file);
     }
 
-    LoadResult Load(Kernel::Process& process) override;
+    LoadResult Load(Kernel::KProcess& process, Core::System& system) override;
 
-    ResultStatus ReadRomFS(FileSys::VirtualFile& dir) override;
-    ResultStatus ReadIcon(std::vector<u8>& buffer) override;
+    ResultStatus ReadRomFS(FileSys::VirtualFile& out_dir) override;
+    ResultStatus ReadIcon(std::vector<u8>& out_buffer) override;
     ResultStatus ReadProgramId(u64& out_program_id) override;
     ResultStatus ReadTitle(std::string& title) override;
     bool IsRomFSUpdatable() const override;
 
-    ResultStatus ReadNSOModules(Modules& modules) override;
+    ResultStatus ReadNSOModules(Modules& out_modules) override;
 
 private:
     FileSys::ProgramMetadata metadata;
@@ -56,6 +63,7 @@ private:
     std::string name;
     u64 title_id{};
     bool override_update;
+    bool is_hbl;
 
     Modules modules;
 };

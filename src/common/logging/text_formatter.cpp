@@ -1,6 +1,5 @@
-// Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2014 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
 #include <cstdio>
@@ -9,14 +8,17 @@
 #include <windows.h>
 #endif
 
-#include "common/assert.h"
-#include "common/common_funcs.h"
-#include "common/logging/backend.h"
-#include "common/logging/log.h"
-#include "common/logging/text_formatter.h"
-#include "common/string_util.h"
+#ifdef ANDROID
+#include <android/log.h>
+#endif
 
-namespace Log {
+#include "common/assert.h"
+#include "common/logging/filter.h"
+#include "common/logging/log.h"
+#include "common/logging/log_entry.h"
+#include "common/logging/text_formatter.h"
+
+namespace Common::Log {
 
 std::string FormatLogMessage(const Entry& entry) {
     unsigned int time_seconds = static_cast<unsigned int>(entry.timestamp.count() / 1000000);
@@ -108,4 +110,35 @@ void PrintColoredMessage(const Entry& entry) {
 #undef ESC
 #endif
 }
-} // namespace Log
+
+void PrintMessageToLogcat(const Entry& entry) {
+#ifdef ANDROID
+    const auto str = FormatLogMessage(entry);
+
+    android_LogPriority android_log_priority;
+    switch (entry.log_level) {
+    case Level::Trace:
+        android_log_priority = ANDROID_LOG_VERBOSE;
+        break;
+    case Level::Debug:
+        android_log_priority = ANDROID_LOG_DEBUG;
+        break;
+    case Level::Info:
+        android_log_priority = ANDROID_LOG_INFO;
+        break;
+    case Level::Warning:
+        android_log_priority = ANDROID_LOG_WARN;
+        break;
+    case Level::Error:
+        android_log_priority = ANDROID_LOG_ERROR;
+        break;
+    case Level::Critical:
+        android_log_priority = ANDROID_LOG_FATAL;
+        break;
+    case Level::Count:
+        UNREACHABLE();
+    }
+    __android_log_print(android_log_priority, "YuzuNative", "%s", str.c_str());
+#endif
+}
+} // namespace Common::Log

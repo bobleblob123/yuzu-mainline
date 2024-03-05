@@ -1,22 +1,123 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <memory>
 
 #include "common/logging/log.h"
-#include "core/hle/ipc_helpers.h"
-#include "core/hle/kernel/hle_ipc.h"
+#include "common/settings.h"
+#include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/nfc/nfc.h"
+#include "core/hle/service/nfc/nfc_interface.h"
+#include "core/hle/service/server_manager.h"
 #include "core/hle/service/service.h"
-#include "core/hle/service/sm/sm.h"
-#include "core/settings.h"
 
 namespace Service::NFC {
 
+class IUser final : public NfcInterface {
+public:
+    explicit IUser(Core::System& system_) : NfcInterface(system_, "NFC::IUser", BackendType::Nfc) {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, &NfcInterface::Initialize, "InitializeOld"},
+            {1, &NfcInterface::Finalize, "FinalizeOld"},
+            {2, &NfcInterface::GetState, "GetStateOld"},
+            {3, &NfcInterface::IsNfcEnabled, "IsNfcEnabledOld"},
+            {400, &NfcInterface::Initialize, "Initialize"},
+            {401, &NfcInterface::Finalize, "Finalize"},
+            {402, &NfcInterface::GetState, "GetState"},
+            {403, &NfcInterface::IsNfcEnabled, "IsNfcEnabled"},
+            {404, &NfcInterface::ListDevices, "ListDevices"},
+            {405, &NfcInterface::GetDeviceState, "GetDeviceState"},
+            {406, &NfcInterface::GetNpadId, "GetNpadId"},
+            {407, &NfcInterface::AttachAvailabilityChangeEvent, "AttachAvailabilityChangeEvent"},
+            {408, &NfcInterface::StartDetection, "StartDetection"},
+            {409, &NfcInterface::StopDetection, "StopDetection"},
+            {410, &NfcInterface::GetTagInfo, "GetTagInfo"},
+            {411, &NfcInterface::AttachActivateEvent, "AttachActivateEvent"},
+            {412, &NfcInterface::AttachDeactivateEvent, "AttachDeactivateEvent"},
+            {1000, &NfcInterface::ReadMifare, "ReadMifare"},
+            {1001, &NfcInterface::WriteMifare ,"WriteMifare"},
+            {1300, &NfcInterface::SendCommandByPassThrough, "SendCommandByPassThrough"},
+            {1301, nullptr, "KeepPassThroughSession"},
+            {1302, nullptr, "ReleasePassThroughSession"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+class ISystem final : public NfcInterface {
+public:
+    explicit ISystem(Core::System& system_)
+        : NfcInterface{system_, "NFC::ISystem", BackendType::Nfc} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, &NfcInterface::Initialize, "InitializeOld"},
+            {1, &NfcInterface::Finalize, "FinalizeOld"},
+            {2, &NfcInterface::GetState, "GetStateOld"},
+            {3, &NfcInterface::IsNfcEnabled, "IsNfcEnabledOld"},
+            {100, &NfcInterface::SetNfcEnabled, "SetNfcEnabledOld"},
+            {400, &NfcInterface::Initialize, "Initialize"},
+            {401, &NfcInterface::Finalize, "Finalize"},
+            {402, &NfcInterface::GetState, "GetState"},
+            {403, &NfcInterface::IsNfcEnabled, "IsNfcEnabled"},
+            {404, &NfcInterface::ListDevices, "ListDevices"},
+            {405, &NfcInterface::GetDeviceState, "GetDeviceState"},
+            {406, &NfcInterface::GetNpadId, "GetNpadId"},
+            {407, &NfcInterface::AttachAvailabilityChangeEvent, "AttachAvailabilityChangeEvent"},
+            {408, &NfcInterface::StartDetection, "StartDetection"},
+            {409, &NfcInterface::StopDetection, "StopDetection"},
+            {410, &NfcInterface::GetTagInfo, "GetTagInfo"},
+            {411, &NfcInterface::AttachActivateEvent, "AttachActivateEvent"},
+            {412, &NfcInterface::AttachDeactivateEvent, "AttachDeactivateEvent"},
+            {500, &NfcInterface::SetNfcEnabled, "SetNfcEnabled"},
+            {510, nullptr, "OutputTestWave"},
+            {1000, &NfcInterface::ReadMifare, "ReadMifare"},
+            {1001, &NfcInterface::WriteMifare, "WriteMifare"},
+            {1300, &NfcInterface::SendCommandByPassThrough, "SendCommandByPassThrough"},
+            {1301, nullptr, "KeepPassThroughSession"},
+            {1302, nullptr, "ReleasePassThroughSession"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+// MFInterface has an unique interface but it's identical to NfcInterface so we can keep the code
+// simpler
+using MFInterface = NfcInterface;
+class MFIUser final : public MFInterface {
+public:
+    explicit MFIUser(Core::System& system_)
+        : MFInterface{system_, "NFC::MFInterface", BackendType::Mifare} {
+        // clang-format off
+        static const FunctionInfoTyped<MFIUser> functions[] = {
+            {0, &MFIUser::Initialize, "Initialize"},
+            {1, &MFIUser::Finalize, "Finalize"},
+            {2, &MFIUser::ListDevices, "ListDevices"},
+            {3, &MFIUser::StartDetection, "StartDetection"},
+            {4, &MFIUser::StopDetection, "StopDetection"},
+            {5, &MFIUser::ReadMifare, "Read"},
+            {6, &MFIUser::WriteMifare, "Write"},
+            {7, &MFIUser::GetTagInfo, "GetTagInfo"},
+            {8, &MFIUser::AttachActivateEvent, "GetActivateEventHandle"},
+            {9, &MFIUser::AttachDeactivateEvent, "GetDeactivateEventHandle"},
+            {10, &MFIUser::GetState, "GetState"},
+            {11, &MFIUser::GetDeviceState, "GetDeviceState"},
+            {12, &MFIUser::GetNpadId, "GetNpadId"},
+            {13, &MFIUser::AttachAvailabilityChangeEvent, "GetAvailabilityChangeEventHandle"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
 class IAm final : public ServiceFramework<IAm> {
 public:
-    explicit IAm() : ServiceFramework{"NFC::IAm"} {
+    explicit IAm(Core::System& system_) : ServiceFramework{system_, "NFC::IAm"} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, nullptr, "Initialize"},
@@ -31,10 +132,10 @@ public:
 
 class NFC_AM final : public ServiceFramework<NFC_AM> {
 public:
-    explicit NFC_AM() : ServiceFramework{"nfc:am"} {
+    explicit NFC_AM(Core::System& system_) : ServiceFramework{system_, "nfc:am"} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, &NFC_AM::CreateAmInterface, "CreateAmInterface"},
+            {0, &NFC_AM::CreateAmNfcInterface, "CreateAmNfcInterface"},
         };
         // clang-format on
 
@@ -42,47 +143,21 @@ public:
     }
 
 private:
-    void CreateAmInterface(Kernel::HLERequestContext& ctx) {
+    void CreateAmNfcInterface(HLERequestContext& ctx) {
         LOG_DEBUG(Service_NFC, "called");
 
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-        rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<IAm>();
-    }
-};
-
-class MFIUser final : public ServiceFramework<MFIUser> {
-public:
-    explicit MFIUser() : ServiceFramework{"NFC::MFIUser"} {
-        // clang-format off
-        static const FunctionInfo functions[] = {
-            {0, nullptr, "Initialize"},
-            {1, nullptr, "Finalize"},
-            {2, nullptr, "ListDevices"},
-            {3, nullptr, "StartDetection"},
-            {4, nullptr, "StopDetection"},
-            {5, nullptr, "Read"},
-            {6, nullptr, "Write"},
-            {7, nullptr, "GetTagInfo"},
-            {8, nullptr, "GetActivateEventHandle"},
-            {9, nullptr, "GetDeactivateEventHandle"},
-            {10, nullptr, "GetState"},
-            {11, nullptr, "GetDeviceState"},
-            {12, nullptr, "GetNpadId"},
-            {13, nullptr, "GetAvailabilityChangeEventHandle"},
-        };
-        // clang-format on
-
-        RegisterHandlers(functions);
+        rb.Push(ResultSuccess);
+        rb.PushIpcInterface<IAm>(system);
     }
 };
 
 class NFC_MF_U final : public ServiceFramework<NFC_MF_U> {
 public:
-    explicit NFC_MF_U() : ServiceFramework{"nfc:mf:u"} {
+    explicit NFC_MF_U(Core::System& system_) : ServiceFramework{system_, "nfc:mf:u"} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, &NFC_MF_U::CreateUserInterface, "CreateUserInterface"},
+            {0, &NFC_MF_U::CreateUserNfcInterface, "CreateUserNfcInterface"},
         };
         // clang-format on
 
@@ -90,91 +165,21 @@ public:
     }
 
 private:
-    void CreateUserInterface(Kernel::HLERequestContext& ctx) {
+    void CreateUserNfcInterface(HLERequestContext& ctx) {
         LOG_DEBUG(Service_NFC, "called");
 
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-        rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<MFIUser>();
-    }
-};
-
-class IUser final : public ServiceFramework<IUser> {
-public:
-    explicit IUser() : ServiceFramework{"NFC::IUser"} {
-        // clang-format off
-        static const FunctionInfo functions[] = {
-            {0, &IUser::InitializeOld, "InitializeOld"},
-            {1, &IUser::FinalizeOld, "FinalizeOld"},
-            {2, &IUser::GetStateOld, "GetStateOld"},
-            {3, &IUser::IsNfcEnabledOld, "IsNfcEnabledOld"},
-            {400, nullptr, "Initialize"},
-            {401, nullptr, "Finalize"},
-            {402, nullptr, "GetState"},
-            {403, nullptr, "IsNfcEnabled"},
-            {404, nullptr, "ListDevices"},
-            {405, nullptr, "GetDeviceState"},
-            {406, nullptr, "GetNpadId"},
-            {407, nullptr, "AttachAvailabilityChangeEvent"},
-            {408, nullptr, "StartDetection"},
-            {409, nullptr, "StopDetection"},
-            {410, nullptr, "GetTagInfo"},
-            {411, nullptr, "AttachActivateEvent"},
-            {412, nullptr, "AttachDeactivateEvent"},
-            {1000, nullptr, "ReadMifare"},
-            {1001, nullptr, "WriteMifare"},
-            {1300, nullptr, "SendCommandByPassThrough"},
-            {1301, nullptr, "KeepPassThroughSession"},
-            {1302, nullptr, "ReleasePassThroughSession"},
-        };
-        // clang-format on
-
-        RegisterHandlers(functions);
-    }
-
-private:
-    enum class NfcStates : u32 {
-        Finalized = 6,
-    };
-
-    void InitializeOld(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_NFC, "called");
-
-        IPC::ResponseBuilder rb{ctx, 2, 0};
-        rb.Push(RESULT_SUCCESS);
-        // We don't deal with hardware initialization so we can just stub this.
-    }
-
-    void IsNfcEnabledOld(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_NFC, "IsNfcEnabledOld");
-
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.PushRaw<u8>(true);
-    }
-
-    void GetStateOld(Kernel::HLERequestContext& ctx) {
-        LOG_WARNING(Service_NFC, "(STUBBED) called");
-
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.PushEnum(NfcStates::Finalized); // TODO(ogniK): Figure out if this matches nfp
-    }
-
-    void FinalizeOld(Kernel::HLERequestContext& ctx) {
-        LOG_WARNING(Service_NFC, "(STUBBED) called");
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
+        rb.Push(ResultSuccess);
+        rb.PushIpcInterface<MFIUser>(system);
     }
 };
 
 class NFC_U final : public ServiceFramework<NFC_U> {
 public:
-    explicit NFC_U() : ServiceFramework{"nfc:user"} {
+    explicit NFC_U(Core::System& system_) : ServiceFramework{system_, "nfc:user"} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, &NFC_U::CreateUserInterface, "CreateUserInterface"},
+            {0, &NFC_U::CreateUserNfcInterface, "CreateUserNfcInterface"},
         };
         // clang-format on
 
@@ -182,57 +187,21 @@ public:
     }
 
 private:
-    void CreateUserInterface(Kernel::HLERequestContext& ctx) {
+    void CreateUserNfcInterface(HLERequestContext& ctx) {
         LOG_DEBUG(Service_NFC, "called");
 
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-        rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<IUser>();
-    }
-};
-
-class ISystem final : public ServiceFramework<ISystem> {
-public:
-    explicit ISystem() : ServiceFramework{"ISystem"} {
-        // clang-format off
-        static const FunctionInfo functions[] = {
-            {0, nullptr, "Initialize"},
-            {1, nullptr, "Finalize"},
-            {2, nullptr, "GetState"},
-            {3, nullptr, "IsNfcEnabled"},
-            {100, nullptr, "SetNfcEnabled"},
-            {400, nullptr, "InitializeSystem"},
-            {401, nullptr, "FinalizeSystem"},
-            {402, nullptr, "GetState"},
-            {403, nullptr, "IsNfcEnabled"},
-            {404, nullptr, "ListDevices"},
-            {405, nullptr, "GetDeviceState"},
-            {406, nullptr, "GetNpadId"},
-            {407, nullptr, "AttachAvailabilityChangeEvent"},
-            {408, nullptr, "StartDetection"},
-            {409, nullptr, "StopDetection"},
-            {410, nullptr, "GetTagInfo"},
-            {411, nullptr, "AttachActivateEvent"},
-            {412, nullptr, "AttachDeactivateEvent"},
-            {500, nullptr, "SetNfcEnabled"},
-            {1000, nullptr, "ReadMifare"},
-            {1001, nullptr, "WriteMifare"},
-            {1300, nullptr, "SendCommandByPassThrough"},
-            {1301, nullptr, "KeepPassThroughSession"},
-            {1302, nullptr, "ReleasePassThroughSession"},
-        };
-        // clang-format on
-
-        RegisterHandlers(functions);
+        rb.Push(ResultSuccess);
+        rb.PushIpcInterface<IUser>(system);
     }
 };
 
 class NFC_SYS final : public ServiceFramework<NFC_SYS> {
 public:
-    explicit NFC_SYS() : ServiceFramework{"nfc:sys"} {
+    explicit NFC_SYS(Core::System& system_) : ServiceFramework{system_, "nfc:sys"} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, &NFC_SYS::CreateSystemInterface, "CreateSystemInterface"},
+            {0, &NFC_SYS::CreateSystemNfcInterface, "CreateSystemNfcInterface"},
         };
         // clang-format on
 
@@ -240,20 +209,24 @@ public:
     }
 
 private:
-    void CreateSystemInterface(Kernel::HLERequestContext& ctx) {
+    void CreateSystemNfcInterface(HLERequestContext& ctx) {
         LOG_DEBUG(Service_NFC, "called");
 
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-        rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<ISystem>();
+        rb.Push(ResultSuccess);
+        rb.PushIpcInterface<ISystem>(system);
     }
 };
 
-void InstallInterfaces(SM::ServiceManager& sm) {
-    std::make_shared<NFC_AM>()->InstallAsService(sm);
-    std::make_shared<NFC_MF_U>()->InstallAsService(sm);
-    std::make_shared<NFC_U>()->InstallAsService(sm);
-    std::make_shared<NFC_SYS>()->InstallAsService(sm);
+void LoopProcess(Core::System& system) {
+    auto server_manager = std::make_unique<ServerManager>(system);
+
+    server_manager->RegisterNamedService("nfc:am", std::make_shared<NFC_AM>(system));
+    server_manager->RegisterNamedService("nfc:mf:u", std::make_shared<NFC_MF_U>(system));
+    server_manager->RegisterNamedService("nfc:user", std::make_shared<NFC_U>(system));
+    server_manager->RegisterNamedService("nfc:sys", std::make_shared<NFC_SYS>(system));
+
+    ServerManager::RunServer(std::move(server_manager));
 }
 
 } // namespace Service::NFC

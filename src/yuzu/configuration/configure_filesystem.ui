@@ -13,6 +13,9 @@
   <property name="windowTitle">
    <string>Form</string>
   </property>
+  <property name="accessibleName">
+   <string>Filesystem</string>
+  </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
     <layout class="QVBoxLayout" name="verticalLayout_3">
@@ -116,127 +119,6 @@
       </widget>
      </item>
      <item>
-      <widget class="QGroupBox" name="groupBox_3">
-       <property name="title">
-        <string>Storage Sizes</string>
-       </property>
-       <layout class="QGridLayout" name="gridLayout_3">
-        <item row="3" column="0">
-         <widget class="QLabel" name="label_5">
-          <property name="text">
-           <string>SD Card</string>
-          </property>
-         </widget>
-        </item>
-        <item row="1" column="0">
-         <widget class="QLabel" name="label_4">
-          <property name="text">
-           <string>System NAND</string>
-          </property>
-         </widget>
-        </item>
-        <item row="1" column="1">
-         <widget class="QComboBox" name="sysnand_size">
-          <item>
-           <property name="text">
-            <string>2.5 GB</string>
-           </property>
-          </item>
-         </widget>
-        </item>
-        <item row="3" column="1">
-         <widget class="QComboBox" name="sdmc_size">
-          <property name="currentText">
-           <string>32 GB</string>
-          </property>
-          <item>
-           <property name="text">
-            <string>1 GB</string>
-           </property>
-          </item>
-          <item>
-           <property name="text">
-            <string>2 GB</string>
-           </property>
-          </item>
-          <item>
-           <property name="text">
-            <string>4 GB</string>
-           </property>
-          </item>
-          <item>
-           <property name="text">
-            <string>8 GB</string>
-           </property>
-          </item>
-          <item>
-           <property name="text">
-            <string>16 GB</string>
-           </property>
-          </item>
-          <item>
-           <property name="text">
-            <string>32 GB</string>
-           </property>
-          </item>
-          <item>
-           <property name="text">
-            <string>64 GB</string>
-           </property>
-          </item>
-          <item>
-           <property name="text">
-            <string>128 GB</string>
-           </property>
-          </item>
-          <item>
-           <property name="text">
-            <string>256 GB</string>
-           </property>
-          </item>
-          <item>
-           <property name="text">
-            <string>1 TB</string>
-           </property>
-          </item>
-         </widget>
-        </item>
-        <item row="2" column="1">
-         <widget class="QComboBox" name="usrnand_size">
-          <item>
-           <property name="text">
-            <string>26 GB</string>
-           </property>
-          </item>
-         </widget>
-        </item>
-        <item row="2" column="0">
-         <widget class="QLabel" name="label_6">
-          <property name="text">
-           <string>User NAND</string>
-          </property>
-         </widget>
-        </item>
-        <item row="0" column="0">
-         <widget class="QLabel" name="label_7">
-          <property name="text">
-           <string>NAND</string>
-          </property>
-         </widget>
-        </item>
-        <item row="0" column="1">
-         <widget class="QComboBox" name="nand_size">
-          <item>
-           <property name="text">
-            <string>29.1 GB</string>
-           </property>
-          </item>
-         </widget>
-        </item>
-       </layout>
-      </widget>
-     </item>
-     <item>
       <widget class="QGroupBox" name="groupBox_4">
        <property name="title">
         <string>Patch Manager</string>
@@ -319,40 +201,7 @@
         <string>Caching</string>
        </property>
        <layout class="QGridLayout" name="gridLayout_5">
-        <item row="0" column="0">
-         <widget class="QLabel" name="label_10">
-          <property name="text">
-           <string>Cache Directory</string>
-          </property>
-         </widget>
-        </item>
-        <item row="0" column="1">
-         <spacer name="horizontalSpacer_3">
-          <property name="orientation">
-           <enum>Qt::Horizontal</enum>
-          </property>
-          <property name="sizeType">
-           <enum>QSizePolicy::Fixed</enum>
-          </property>
-          <property name="sizeHint" stdset="0">
-           <size>
-            <width>40</width>
-            <height>20</height>
-           </size>
-          </property>
-         </spacer>
-        </item>
-        <item row="0" column="2">
-         <widget class="QLineEdit" name="cache_directory_edit"/>
-        </item>
-        <item row="0" column="3">
-         <widget class="QToolButton" name="cache_directory_button">
-          <property name="text">
-           <string>...</string>
-          </property>
-         </widget>
-        </item>
-        <item row="1" column="0" colspan="4">
+        <item row="0" column="0" colspan="2">
          <layout class="QHBoxLayout" name="horizontalLayout_2">
           <item>
            <widget class="QCheckBox" name="cache_game_list">

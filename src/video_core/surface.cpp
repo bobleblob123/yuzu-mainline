@@ -1,9 +1,9 @@
-// Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2014 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/common_types.h"
 #include "common/math_util.h"
+#include "common/settings.h"
 #include "video_core/surface.h"
 
 namespace VideoCore::Surface {
@@ -28,8 +28,8 @@ SurfaceTarget SurfaceTargetFromTextureType(Tegra::Texture::TextureType texture_t
     case Tegra::Texture::TextureType::Texture2DArray:
         return SurfaceTarget::Texture2DArray;
     default:
-        LOG_CRITICAL(HW_GPU, "Unimplemented texture_type={}", static_cast<u32>(texture_type));
-        UNREACHABLE();
+        LOG_CRITICAL(HW_GPU, "Unimplemented texture_type={}", texture_type);
+        ASSERT(false);
         return SurfaceTarget::Texture2D;
     }
 }
@@ -47,8 +47,8 @@ bool SurfaceTargetIsLayered(SurfaceTarget target) {
     case SurfaceTarget::TextureCubeArray:
         return true;
     default:
-        LOG_CRITICAL(HW_GPU, "Unimplemented surface_target={}", static_cast<u32>(target));
-        UNREACHABLE();
+        LOG_CRITICAL(HW_GPU, "Unimplemented surface_target={}", target);
+        ASSERT(false);
         return false;
     }
 }
@@ -66,446 +66,168 @@ bool SurfaceTargetIsArray(SurfaceTarget target) {
     case SurfaceTarget::TextureCubeArray:
         return true;
     default:
-        LOG_CRITICAL(HW_GPU, "Unimplemented surface_target={}", static_cast<u32>(target));
-        UNREACHABLE();
+        LOG_CRITICAL(HW_GPU, "Unimplemented surface_target={}", target);
+        ASSERT(false);
         return false;
     }
 }
 
 PixelFormat PixelFormatFromDepthFormat(Tegra::DepthFormat format) {
     switch (format) {
-    case Tegra::DepthFormat::S8_Z24_UNORM:
-        return PixelFormat::S8Z24;
-    case Tegra::DepthFormat::Z24_S8_UNORM:
-        return PixelFormat::Z24S8;
+    case Tegra::DepthFormat::Z24_UNORM_S8_UINT:
+        return PixelFormat::S8_UINT_D24_UNORM;
+    case Tegra::DepthFormat::S8Z24_UNORM:
+        return PixelFormat::D24_UNORM_S8_UINT;
     case Tegra::DepthFormat::Z32_FLOAT:
-        return PixelFormat::Z32F;
+        return PixelFormat::D32_FLOAT;
     case Tegra::DepthFormat::Z16_UNORM:
-        return PixelFormat::Z16;
-    case Tegra::DepthFormat::Z32_S8_X24_FLOAT:
-        return PixelFormat::Z32FS8;
+        return PixelFormat::D16_UNORM;
+    case Tegra::DepthFormat::S8_UINT:
+        return PixelFormat::S8_UINT;
+    case Tegra::DepthFormat::Z32_FLOAT_X24S8_UINT:
+        return PixelFormat::D32_FLOAT_S8_UINT;
+    case Tegra::DepthFormat::X8Z24_UNORM:
+        return PixelFormat::X8_D24_UNORM;
     default:
-        LOG_CRITICAL(HW_GPU, "Unimplemented format={}", static_cast<u32>(format));
-        UNREACHABLE();
-        return PixelFormat::S8Z24;
+        UNIMPLEMENTED_MSG("Unimplemented format={}", format);
+        return PixelFormat::S8_UINT_D24_UNORM;
     }
 }
 
 PixelFormat PixelFormatFromRenderTargetFormat(Tegra::RenderTargetFormat format) {
     switch (format) {
-    case Tegra::RenderTargetFormat::RGBA8_SRGB:
-        return PixelFormat::RGBA8_SRGB;
-    case Tegra::RenderTargetFormat::RGBA8_UNORM:
-        return PixelFormat::ABGR8U;
-    case Tegra::RenderTargetFormat::RGBA8_SNORM:
-        return PixelFormat::ABGR8S;
-    case Tegra::RenderTargetFormat::RGBA8_UINT:
-        return PixelFormat::ABGR8UI;
-    case Tegra::RenderTargetFormat::BGRA8_SRGB:
-        return PixelFormat::BGRA8_SRGB;
-    case Tegra::RenderTargetFormat::BGRA8_UNORM:
-        return PixelFormat::BGRA8;
-    case Tegra::RenderTargetFormat::RGB10_A2_UNORM:
-        return PixelFormat::A2B10G10R10U;
-    case Tegra::RenderTargetFormat::RGBA16_FLOAT:
-        return PixelFormat::RGBA16F;
-    case Tegra::RenderTargetFormat::RGBA16_UNORM:
-        return PixelFormat::RGBA16U;
-    case Tegra::RenderTargetFormat::RGBA16_UINT:
-        return PixelFormat::RGBA16UI;
-    case Tegra::RenderTargetFormat::RGBA32_FLOAT:
-        return PixelFormat::RGBA32F;
-    case Tegra::RenderTargetFormat::RG32_FLOAT:
-        return PixelFormat::RG32F;
-    case Tegra::RenderTargetFormat::R11G11B10_FLOAT:
-        return PixelFormat::R11FG11FB10F;
-    case Tegra::RenderTargetFormat::B5G6R5_UNORM:
-        return PixelFormat::B5G6R5U;
-    case Tegra::RenderTargetFormat::BGR5A1_UNORM:
-        return PixelFormat::A1B5G5R5U;
-    case Tegra::RenderTargetFormat::RGBA32_UINT:
-        return PixelFormat::RGBA32UI;
-    case Tegra::RenderTargetFormat::R8_UNORM:
-        return PixelFormat::R8U;
-    case Tegra::RenderTargetFormat::R8_UINT:
-        return PixelFormat::R8UI;
-    case Tegra::RenderTargetFormat::RG16_FLOAT:
-        return PixelFormat::RG16F;
-    case Tegra::RenderTargetFormat::RG16_UINT:
-        return PixelFormat::RG16UI;
-    case Tegra::RenderTargetFormat::RG16_SINT:
-        return PixelFormat::RG16I;
-    case Tegra::RenderTargetFormat::RG16_UNORM:
-        return PixelFormat::RG16;
-    case Tegra::RenderTargetFormat::RG16_SNORM:
-        return PixelFormat::RG16S;
-    case Tegra::RenderTargetFormat::RG8_UNORM:
-        return PixelFormat::RG8U;
-    case Tegra::RenderTargetFormat::RG8_SNORM:
-        return PixelFormat::RG8S;
-    case Tegra::RenderTargetFormat::R16_FLOAT:
-        return PixelFormat::R16F;
-    case Tegra::RenderTargetFormat::R16_UNORM:
-        return PixelFormat::R16U;
-    case Tegra::RenderTargetFormat::R16_SNORM:
-        return PixelFormat::R16S;
-    case Tegra::RenderTargetFormat::R16_UINT:
-        return PixelFormat::R16UI;
-    case Tegra::RenderTargetFormat::R16_SINT:
-        return PixelFormat::R16I;
-    case Tegra::RenderTargetFormat::R32_FLOAT:
-        return PixelFormat::R32F;
+    case Tegra::RenderTargetFormat::R32G32B32A32_FLOAT:
+    case Tegra::RenderTargetFormat::R32G32B32X32_FLOAT:
+        return PixelFormat::R32G32B32A32_FLOAT;
+    case Tegra::RenderTargetFormat::R32G32B32A32_SINT:
+    case Tegra::RenderTargetFormat::R32G32B32X32_SINT:
+        return PixelFormat::R32G32B32A32_SINT;
+    case Tegra::RenderTargetFormat::R32G32B32A32_UINT:
+    case Tegra::RenderTargetFormat::R32G32B32X32_UINT:
+        return PixelFormat::R32G32B32A32_UINT;
+    case Tegra::RenderTargetFormat::R16G16B16A16_UNORM:
+        return PixelFormat::R16G16B16A16_UNORM;
+    case Tegra::RenderTargetFormat::R16G16B16A16_SNORM:
+        return PixelFormat::R16G16B16A16_SNORM;
+    case Tegra::RenderTargetFormat::R16G16B16A16_SINT:
+        return PixelFormat::R16G16B16A16_SINT;
+    case Tegra::RenderTargetFormat::R16G16B16A16_UINT:
+        return PixelFormat::R16G16B16A16_UINT;
+    case Tegra::RenderTargetFormat::R16G16B16A16_FLOAT:
+        return PixelFormat::R16G16B16A16_FLOAT;
+    case Tegra::RenderTargetFormat::R32G32_FLOAT:
+        return PixelFormat::R32G32_FLOAT;
+    case Tegra::RenderTargetFormat::R32G32_SINT:
+        return PixelFormat::R32G32_SINT;
+    case Tegra::RenderTargetFormat::R32G32_UINT:
+        return PixelFormat::R32G32_UINT;
+    case Tegra::RenderTargetFormat::R16G16B16X16_FLOAT:
+        return PixelFormat::R16G16B16X16_FLOAT;
+    case Tegra::RenderTargetFormat::A8R8G8B8_UNORM:
+    case Tegra::RenderTargetFormat::X8R8G8B8_UNORM:
+        return PixelFormat::B8G8R8A8_UNORM;
+    case Tegra::RenderTargetFormat::A8R8G8B8_SRGB:
+    case Tegra::RenderTargetFormat::X8R8G8B8_SRGB:
+        return PixelFormat::B8G8R8A8_SRGB;
+    case Tegra::RenderTargetFormat::A2B10G10R10_UNORM:
+        return PixelFormat::A2B10G10R10_UNORM;
+    case Tegra::RenderTargetFormat::A2B10G10R10_UINT:
+        return PixelFormat::A2B10G10R10_UINT;
+    case Tegra::RenderTargetFormat::A2R10G10B10_UNORM:
+        return PixelFormat::A2R10G10B10_UNORM;
+    case Tegra::RenderTargetFormat::A8B8G8R8_UNORM:
+    case Tegra::RenderTargetFormat::X8B8G8R8_UNORM:
+        return PixelFormat::A8B8G8R8_UNORM;
+    case Tegra::RenderTargetFormat::A8B8G8R8_SRGB:
+    case Tegra::RenderTargetFormat::X8B8G8R8_SRGB:
+        return PixelFormat::A8B8G8R8_SRGB;
+    case Tegra::RenderTargetFormat::A8B8G8R8_SNORM:
+        return PixelFormat::A8B8G8R8_SNORM;
+    case Tegra::RenderTargetFormat::A8B8G8R8_SINT:
+        return PixelFormat::A8B8G8R8_SINT;
+    case Tegra::RenderTargetFormat::A8B8G8R8_UINT:
+        return PixelFormat::A8B8G8R8_UINT;
+    case Tegra::RenderTargetFormat::R16G16_UNORM:
+        return PixelFormat::R16G16_UNORM;
+    case Tegra::RenderTargetFormat::R16G16_SNORM:
+        return PixelFormat::R16G16_SNORM;
+    case Tegra::RenderTargetFormat::R16G16_SINT:
+        return PixelFormat::R16G16_SINT;
+    case Tegra::RenderTargetFormat::R16G16_UINT:
+        return PixelFormat::R16G16_UINT;
+    case Tegra::RenderTargetFormat::R16G16_FLOAT:
+        return PixelFormat::R16G16_FLOAT;
+    case Tegra::RenderTargetFormat::B10G11R11_FLOAT:
+        return PixelFormat::B10G11R11_FLOAT;
+    case Tegra::RenderTargetFormat::R32_SINT:
+        return PixelFormat::R32_SINT;
     case Tegra::RenderTargetFormat::R32_UINT:
-        return PixelFormat::R32UI;
-    case Tegra::RenderTargetFormat::RG32_UINT:
-        return PixelFormat::RG32UI;
-    case Tegra::RenderTargetFormat::RGBX16_FLOAT:
-        return PixelFormat::RGBX16F;
-    default:
-        LOG_CRITICAL(HW_GPU, "Unimplemented format={}", static_cast<u32>(format));
-        UNREACHABLE();
-        return PixelFormat::RGBA8_SRGB;
-    }
-}
-
-PixelFormat PixelFormatFromTextureFormat(Tegra::Texture::TextureFormat format,
-                                         Tegra::Texture::ComponentType component_type,
-                                         bool is_srgb) {
-    // TODO(Subv): Properly implement this
-    switch (format) {
-    case Tegra::Texture::TextureFormat::A8R8G8B8:
-        if (is_srgb) {
-            return PixelFormat::RGBA8_SRGB;
-        }
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::UNORM:
-            return PixelFormat::ABGR8U;
-        case Tegra::Texture::ComponentType::SNORM:
-            return PixelFormat::ABGR8S;
-        case Tegra::Texture::ComponentType::UINT:
-            return PixelFormat::ABGR8UI;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::B5G6R5:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::UNORM:
-            return PixelFormat::B5G6R5U;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::A2B10G10R10:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::UNORM:
-            return PixelFormat::A2B10G10R10U;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::A1B5G5R5:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::UNORM:
-            return PixelFormat::A1B5G5R5U;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::A4B4G4R4:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::UNORM:
-            return PixelFormat::R4G4B4A4U;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::R8:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::UNORM:
-            return PixelFormat::R8U;
-        case Tegra::Texture::ComponentType::UINT:
-            return PixelFormat::R8UI;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::G8R8:
-        // TextureFormat::G8R8 is actually ordered red then green, as such we can use
-        // PixelFormat::RG8U and PixelFormat::RG8S. This was tested with The Legend of Zelda: Breath
-        // of the Wild, which uses this format to render the hearts on the UI.
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::UNORM:
-            return PixelFormat::RG8U;
-        case Tegra::Texture::ComponentType::SNORM:
-            return PixelFormat::RG8S;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::R16_G16_B16_A16:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::UNORM:
-            return PixelFormat::RGBA16U;
-        case Tegra::Texture::ComponentType::FLOAT:
-            return PixelFormat::RGBA16F;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::BF10GF11RF11:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::FLOAT:
-            return PixelFormat::R11FG11FB10F;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::R32_G32_B32_A32:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::FLOAT:
-            return PixelFormat::RGBA32F;
-        case Tegra::Texture::ComponentType::UINT:
-            return PixelFormat::RGBA32UI;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::R32_G32:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::FLOAT:
-            return PixelFormat::RG32F;
-        case Tegra::Texture::ComponentType::UINT:
-            return PixelFormat::RG32UI;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::R32_G32_B32:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::FLOAT:
-            return PixelFormat::RGB32F;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::R16:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::FLOAT:
-            return PixelFormat::R16F;
-        case Tegra::Texture::ComponentType::UNORM:
-            return PixelFormat::R16U;
-        case Tegra::Texture::ComponentType::SNORM:
-            return PixelFormat::R16S;
-        case Tegra::Texture::ComponentType::UINT:
-            return PixelFormat::R16UI;
-        case Tegra::Texture::ComponentType::SINT:
-            return PixelFormat::R16I;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::R32:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::FLOAT:
-            return PixelFormat::R32F;
-        case Tegra::Texture::ComponentType::UINT:
-            return PixelFormat::R32UI;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::ZF32:
-        return PixelFormat::Z32F;
-    case Tegra::Texture::TextureFormat::Z16:
-        return PixelFormat::Z16;
-    case Tegra::Texture::TextureFormat::S8Z24:
-        return PixelFormat::S8Z24;
-    case Tegra::Texture::TextureFormat::ZF32_X24S8:
-        return PixelFormat::Z32FS8;
-    case Tegra::Texture::TextureFormat::DXT1:
-        return is_srgb ? PixelFormat::DXT1_SRGB : PixelFormat::DXT1;
-    case Tegra::Texture::TextureFormat::DXT23:
-        return is_srgb ? PixelFormat::DXT23_SRGB : PixelFormat::DXT23;
-    case Tegra::Texture::TextureFormat::DXT45:
-        return is_srgb ? PixelFormat::DXT45_SRGB : PixelFormat::DXT45;
-    case Tegra::Texture::TextureFormat::DXN1:
-        return PixelFormat::DXN1;
-    case Tegra::Texture::TextureFormat::DXN2:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::UNORM:
-            return PixelFormat::DXN2UNORM;
-        case Tegra::Texture::ComponentType::SNORM:
-            return PixelFormat::DXN2SNORM;
-        default:
-            break;
-        }
-        break;
-    case Tegra::Texture::TextureFormat::BC7U:
-        return is_srgb ? PixelFormat::BC7U_SRGB : PixelFormat::BC7U;
-    case Tegra::Texture::TextureFormat::BC6H_UF16:
-        return PixelFormat::BC6H_UF16;
-    case Tegra::Texture::TextureFormat::BC6H_SF16:
-        return PixelFormat::BC6H_SF16;
-    case Tegra::Texture::TextureFormat::ASTC_2D_4X4:
-        return is_srgb ? PixelFormat::ASTC_2D_4X4_SRGB : PixelFormat::ASTC_2D_4X4;
-    case Tegra::Texture::TextureFormat::ASTC_2D_5X4:
-        return is_srgb ? PixelFormat::ASTC_2D_5X4_SRGB : PixelFormat::ASTC_2D_5X4;
-    case Tegra::Texture::TextureFormat::ASTC_2D_5X5:
-        return is_srgb ? PixelFormat::ASTC_2D_5X5_SRGB : PixelFormat::ASTC_2D_5X5;
-    case Tegra::Texture::TextureFormat::ASTC_2D_8X8:
-        return is_srgb ? PixelFormat::ASTC_2D_8X8_SRGB : PixelFormat::ASTC_2D_8X8;
-    case Tegra::Texture::TextureFormat::ASTC_2D_8X5:
-        return is_srgb ? PixelFormat::ASTC_2D_8X5_SRGB : PixelFormat::ASTC_2D_8X5;
-    case Tegra::Texture::TextureFormat::ASTC_2D_10X8:
-        return is_srgb ? PixelFormat::ASTC_2D_10X8_SRGB : PixelFormat::ASTC_2D_10X8;
-    case Tegra::Texture::TextureFormat::ASTC_2D_6X6:
-        return is_srgb ? PixelFormat::ASTC_2D_6X6_SRGB : PixelFormat::ASTC_2D_6X6;
-    case Tegra::Texture::TextureFormat::ASTC_2D_10X10:
-        return is_srgb ? PixelFormat::ASTC_2D_10X10_SRGB : PixelFormat::ASTC_2D_10X10;
-    case Tegra::Texture::TextureFormat::ASTC_2D_12X12:
-        return is_srgb ? PixelFormat::ASTC_2D_12X12_SRGB : PixelFormat::ASTC_2D_12X12;
-    case Tegra::Texture::TextureFormat::ASTC_2D_8X6:
-        return is_srgb ? PixelFormat::ASTC_2D_8X6_SRGB : PixelFormat::ASTC_2D_8X6;
-    case Tegra::Texture::TextureFormat::ASTC_2D_6X5:
-        return is_srgb ? PixelFormat::ASTC_2D_6X5_SRGB : PixelFormat::ASTC_2D_6X5;
-    case Tegra::Texture::TextureFormat::R16_G16:
-        switch (component_type) {
-        case Tegra::Texture::ComponentType::FLOAT:
-            return PixelFormat::RG16F;
-        case Tegra::Texture::ComponentType::UNORM:
-            return PixelFormat::RG16;
-        case Tegra::Texture::ComponentType::SNORM:
-            return PixelFormat::RG16S;
-        case Tegra::Texture::ComponentType::UINT:
-            return PixelFormat::RG16UI;
-        case Tegra::Texture::ComponentType::SINT:
-            return PixelFormat::RG16I;
-        default:
-            break;
-        }
-        break;
-    default:
-        break;
-    }
-    LOG_CRITICAL(HW_GPU, "Unimplemented format={}, component_type={}", static_cast<u32>(format),
-                 static_cast<u32>(component_type));
-    UNREACHABLE();
-    return PixelFormat::ABGR8U;
-}
-
-ComponentType ComponentTypeFromTexture(Tegra::Texture::ComponentType type) {
-    // TODO(Subv): Implement more component types
-    switch (type) {
-    case Tegra::Texture::ComponentType::UNORM:
-        return ComponentType::UNorm;
-    case Tegra::Texture::ComponentType::FLOAT:
-        return ComponentType::Float;
-    case Tegra::Texture::ComponentType::SNORM:
-        return ComponentType::SNorm;
-    case Tegra::Texture::ComponentType::UINT:
-        return ComponentType::UInt;
-    case Tegra::Texture::ComponentType::SINT:
-        return ComponentType::SInt;
-    default:
-        LOG_CRITICAL(HW_GPU, "Unimplemented component type={}", static_cast<u32>(type));
-        UNREACHABLE();
-        return ComponentType::UNorm;
-    }
-}
-
-ComponentType ComponentTypeFromRenderTarget(Tegra::RenderTargetFormat format) {
-    // TODO(Subv): Implement more render targets
-    switch (format) {
-    case Tegra::RenderTargetFormat::RGBA8_UNORM:
-    case Tegra::RenderTargetFormat::RGBA8_SRGB:
-    case Tegra::RenderTargetFormat::BGRA8_UNORM:
-    case Tegra::RenderTargetFormat::BGRA8_SRGB:
-    case Tegra::RenderTargetFormat::RGB10_A2_UNORM:
-    case Tegra::RenderTargetFormat::R8_UNORM:
-    case Tegra::RenderTargetFormat::RG16_UNORM:
-    case Tegra::RenderTargetFormat::R16_UNORM:
-    case Tegra::RenderTargetFormat::B5G6R5_UNORM:
-    case Tegra::RenderTargetFormat::BGR5A1_UNORM:
-    case Tegra::RenderTargetFormat::RG8_UNORM:
-    case Tegra::RenderTargetFormat::RGBA16_UNORM:
-        return ComponentType::UNorm;
-    case Tegra::RenderTargetFormat::RGBA8_SNORM:
-    case Tegra::RenderTargetFormat::RG16_SNORM:
-    case Tegra::RenderTargetFormat::R16_SNORM:
-    case Tegra::RenderTargetFormat::RG8_SNORM:
-        return ComponentType::SNorm;
-    case Tegra::RenderTargetFormat::RGBA16_FLOAT:
-    case Tegra::RenderTargetFormat::RGBX16_FLOAT:
-    case Tegra::RenderTargetFormat::R11G11B10_FLOAT:
-    case Tegra::RenderTargetFormat::RGBA32_FLOAT:
-    case Tegra::RenderTargetFormat::RG32_FLOAT:
-    case Tegra::RenderTargetFormat::RG16_FLOAT:
-    case Tegra::RenderTargetFormat::R16_FLOAT:
+        return PixelFormat::R32_UINT;
     case Tegra::RenderTargetFormat::R32_FLOAT:
-        return ComponentType::Float;
-    case Tegra::RenderTargetFormat::RGBA32_UINT:
-    case Tegra::RenderTargetFormat::RGBA16_UINT:
-    case Tegra::RenderTargetFormat::RG16_UINT:
-    case Tegra::RenderTargetFormat::R8_UINT:
-    case Tegra::RenderTargetFormat::R16_UINT:
-    case Tegra::RenderTargetFormat::RG32_UINT:
-    case Tegra::RenderTargetFormat::R32_UINT:
-    case Tegra::RenderTargetFormat::RGBA8_UINT:
-        return ComponentType::UInt;
-    case Tegra::RenderTargetFormat::RG16_SINT:
+        return PixelFormat::R32_FLOAT;
+    case Tegra::RenderTargetFormat::R5G6B5_UNORM:
+        return PixelFormat::R5G6B5_UNORM;
+    case Tegra::RenderTargetFormat::A1R5G5B5_UNORM:
+    case Tegra::RenderTargetFormat::X1R5G5B5_UNORM:
+        return PixelFormat::A1R5G5B5_UNORM;
+    case Tegra::RenderTargetFormat::R8G8_UNORM:
+        return PixelFormat::R8G8_UNORM;
+    case Tegra::RenderTargetFormat::R8G8_SNORM:
+        return PixelFormat::R8G8_SNORM;
+    case Tegra::RenderTargetFormat::R8G8_SINT:
+        return PixelFormat::R8G8_SINT;
+    case Tegra::RenderTargetFormat::R8G8_UINT:
+        return PixelFormat::R8G8_UINT;
+    case Tegra::RenderTargetFormat::R16_UNORM:
+        return PixelFormat::R16_UNORM;
+    case Tegra::RenderTargetFormat::R16_SNORM:
+        return PixelFormat::R16_SNORM;
     case Tegra::RenderTargetFormat::R16_SINT:
-        return ComponentType::SInt;
+        return PixelFormat::R16_SINT;
+    case Tegra::RenderTargetFormat::R16_UINT:
+        return PixelFormat::R16_UINT;
+    case Tegra::RenderTargetFormat::R16_FLOAT:
+        return PixelFormat::R16_FLOAT;
+    case Tegra::RenderTargetFormat::R8_UNORM:
+        return PixelFormat::R8_UNORM;
+    case Tegra::RenderTargetFormat::R8_SNORM:
+        return PixelFormat::R8_SNORM;
+    case Tegra::RenderTargetFormat::R8_SINT:
+        return PixelFormat::R8_SINT;
+    case Tegra::RenderTargetFormat::R8_UINT:
+        return PixelFormat::R8_UINT;
     default:
-        LOG_CRITICAL(HW_GPU, "Unimplemented format={}", static_cast<u32>(format));
-        UNREACHABLE();
-        return ComponentType::UNorm;
+        UNIMPLEMENTED_MSG("Unimplemented format={}", format);
+        return PixelFormat::A8B8G8R8_UNORM;
     }
 }
 
-PixelFormat PixelFormatFromGPUPixelFormat(Tegra::FramebufferConfig::PixelFormat format) {
+PixelFormat PixelFormatFromGPUPixelFormat(Service::android::PixelFormat format) {
     switch (format) {
-    case Tegra::FramebufferConfig::PixelFormat::ABGR8:
-        return PixelFormat::ABGR8U;
-    case Tegra::FramebufferConfig::PixelFormat::RGB565:
-        return PixelFormat::B5G6R5U;
-    case Tegra::FramebufferConfig::PixelFormat::BGRA8:
-        return PixelFormat::BGRA8;
+    case Service::android::PixelFormat::Rgba8888:
+    case Service::android::PixelFormat::Rgbx8888:
+        return PixelFormat::A8B8G8R8_UNORM;
+    case Service::android::PixelFormat::Rgb565:
+        return PixelFormat::R5G6B5_UNORM;
+    case Service::android::PixelFormat::Bgra8888:
+        return PixelFormat::B8G8R8A8_UNORM;
     default:
-        UNIMPLEMENTED_MSG("Unimplemented format={}", static_cast<u32>(format));
-        return PixelFormat::ABGR8U;
-    }
-}
-
-ComponentType ComponentTypeFromDepthFormat(Tegra::DepthFormat format) {
-    switch (format) {
-    case Tegra::DepthFormat::Z16_UNORM:
-    case Tegra::DepthFormat::S8_Z24_UNORM:
-    case Tegra::DepthFormat::Z24_S8_UNORM:
-        return ComponentType::UNorm;
-    case Tegra::DepthFormat::Z32_FLOAT:
-    case Tegra::DepthFormat::Z32_S8_X24_FLOAT:
-        return ComponentType::Float;
-    default:
-        LOG_CRITICAL(HW_GPU, "Unimplemented format={}", static_cast<u32>(format));
-        UNREACHABLE();
-        return ComponentType::UNorm;
+        UNIMPLEMENTED_MSG("Unimplemented format={}", format);
+        return PixelFormat::A8B8G8R8_UNORM;
     }
 }
 
 SurfaceType GetFormatType(PixelFormat pixel_format) {
-    if (static_cast<std::size_t>(pixel_format) <
-        static_cast<std::size_t>(PixelFormat::MaxColorFormat)) {
+    if (pixel_format < PixelFormat::MaxColorFormat) {
         return SurfaceType::ColorTexture;
     }
-
-    if (static_cast<std::size_t>(pixel_format) <
-        static_cast<std::size_t>(PixelFormat::MaxDepthFormat)) {
+    if (pixel_format < PixelFormat::MaxDepthFormat) {
         return SurfaceType::Depth;
     }
-
-    if (static_cast<std::size_t>(pixel_format) <
-        static_cast<std::size_t>(PixelFormat::MaxDepthStencilFormat)) {
+    if (pixel_format < PixelFormat::MaxStencilFormat) {
+        return SurfaceType::Stencil;
+    }
+    if (pixel_format < PixelFormat::MaxDepthStencilFormat) {
         return SurfaceType::DepthStencil;
     }
 
@@ -517,28 +239,56 @@ SurfaceType GetFormatType(PixelFormat pixel_format) {
 
 bool IsPixelFormatASTC(PixelFormat format) {
     switch (format) {
-    case PixelFormat::ASTC_2D_4X4:
-    case PixelFormat::ASTC_2D_5X4:
-    case PixelFormat::ASTC_2D_5X5:
-    case PixelFormat::ASTC_2D_8X8:
-    case PixelFormat::ASTC_2D_8X5:
+    case PixelFormat::ASTC_2D_4X4_UNORM:
+    case PixelFormat::ASTC_2D_5X4_UNORM:
+    case PixelFormat::ASTC_2D_5X5_UNORM:
+    case PixelFormat::ASTC_2D_8X8_UNORM:
+    case PixelFormat::ASTC_2D_8X5_UNORM:
     case PixelFormat::ASTC_2D_4X4_SRGB:
     case PixelFormat::ASTC_2D_5X4_SRGB:
     case PixelFormat::ASTC_2D_5X5_SRGB:
     case PixelFormat::ASTC_2D_8X8_SRGB:
     case PixelFormat::ASTC_2D_8X5_SRGB:
-    case PixelFormat::ASTC_2D_10X8:
+    case PixelFormat::ASTC_2D_10X8_UNORM:
     case PixelFormat::ASTC_2D_10X8_SRGB:
-    case PixelFormat::ASTC_2D_6X6:
+    case PixelFormat::ASTC_2D_6X6_UNORM:
     case PixelFormat::ASTC_2D_6X6_SRGB:
-    case PixelFormat::ASTC_2D_10X10:
+    case PixelFormat::ASTC_2D_10X6_UNORM:
+    case PixelFormat::ASTC_2D_10X6_SRGB:
+    case PixelFormat::ASTC_2D_10X5_UNORM:
+    case PixelFormat::ASTC_2D_10X5_SRGB:
+    case PixelFormat::ASTC_2D_10X10_UNORM:
     case PixelFormat::ASTC_2D_10X10_SRGB:
-    case PixelFormat::ASTC_2D_12X12:
+    case PixelFormat::ASTC_2D_12X10_UNORM:
+    case PixelFormat::ASTC_2D_12X10_SRGB:
+    case PixelFormat::ASTC_2D_12X12_UNORM:
     case PixelFormat::ASTC_2D_12X12_SRGB:
-    case PixelFormat::ASTC_2D_8X6:
+    case PixelFormat::ASTC_2D_8X6_UNORM:
     case PixelFormat::ASTC_2D_8X6_SRGB:
-    case PixelFormat::ASTC_2D_6X5:
+    case PixelFormat::ASTC_2D_6X5_UNORM:
     case PixelFormat::ASTC_2D_6X5_SRGB:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool IsPixelFormatBCn(PixelFormat format) {
+    switch (format) {
+    case PixelFormat::BC1_RGBA_UNORM:
+    case PixelFormat::BC2_UNORM:
+    case PixelFormat::BC3_UNORM:
+    case PixelFormat::BC4_UNORM:
+    case PixelFormat::BC4_SNORM:
+    case PixelFormat::BC5_UNORM:
+    case PixelFormat::BC5_SNORM:
+    case PixelFormat::BC1_RGBA_SRGB:
+    case PixelFormat::BC2_SRGB:
+    case PixelFormat::BC3_SRGB:
+    case PixelFormat::BC7_UNORM:
+    case PixelFormat::BC6H_UFLOAT:
+    case PixelFormat::BC6H_SFLOAT:
+    case PixelFormat::BC7_SRGB:
         return true;
     default:
         return false;
@@ -547,21 +297,24 @@ bool IsPixelFormatASTC(PixelFormat format) {
 
 bool IsPixelFormatSRGB(PixelFormat format) {
     switch (format) {
-    case PixelFormat::RGBA8_SRGB:
-    case PixelFormat::BGRA8_SRGB:
-    case PixelFormat::DXT1_SRGB:
-    case PixelFormat::DXT23_SRGB:
-    case PixelFormat::DXT45_SRGB:
-    case PixelFormat::BC7U_SRGB:
+    case PixelFormat::A8B8G8R8_SRGB:
+    case PixelFormat::B8G8R8A8_SRGB:
+    case PixelFormat::BC1_RGBA_SRGB:
+    case PixelFormat::BC2_SRGB:
+    case PixelFormat::BC3_SRGB:
+    case PixelFormat::BC7_SRGB:
     case PixelFormat::ASTC_2D_4X4_SRGB:
     case PixelFormat::ASTC_2D_8X8_SRGB:
     case PixelFormat::ASTC_2D_8X5_SRGB:
     case PixelFormat::ASTC_2D_5X4_SRGB:
     case PixelFormat::ASTC_2D_5X5_SRGB:
+    case PixelFormat::ASTC_2D_10X6_SRGB:
     case PixelFormat::ASTC_2D_10X8_SRGB:
     case PixelFormat::ASTC_2D_6X6_SRGB:
+    case PixelFormat::ASTC_2D_10X5_SRGB:
     case PixelFormat::ASTC_2D_10X10_SRGB:
     case PixelFormat::ASTC_2D_12X12_SRGB:
+    case PixelFormat::ASTC_2D_12X10_SRGB:
     case PixelFormat::ASTC_2D_8X6_SRGB:
     case PixelFormat::ASTC_2D_6X5_SRGB:
         return true;
@@ -570,28 +323,97 @@ bool IsPixelFormatSRGB(PixelFormat format) {
     }
 }
 
-std::pair<u32, u32> GetASTCBlockSize(PixelFormat format) {
-    return {GetDefaultBlockWidth(format), GetDefaultBlockHeight(format)};
-}
-
-bool IsFormatBCn(PixelFormat format) {
+bool IsPixelFormatInteger(PixelFormat format) {
     switch (format) {
-    case PixelFormat::DXT1:
-    case PixelFormat::DXT23:
-    case PixelFormat::DXT45:
-    case PixelFormat::DXN1:
-    case PixelFormat::DXN2SNORM:
-    case PixelFormat::DXN2UNORM:
-    case PixelFormat::BC7U:
-    case PixelFormat::BC6H_UF16:
-    case PixelFormat::BC6H_SF16:
-    case PixelFormat::DXT1_SRGB:
-    case PixelFormat::DXT23_SRGB:
-    case PixelFormat::DXT45_SRGB:
-    case PixelFormat::BC7U_SRGB:
+    case PixelFormat::A8B8G8R8_SINT:
+    case PixelFormat::A8B8G8R8_UINT:
+    case PixelFormat::A2B10G10R10_UINT:
+    case PixelFormat::R8_SINT:
+    case PixelFormat::R8_UINT:
+    case PixelFormat::R16G16B16A16_SINT:
+    case PixelFormat::R16G16B16A16_UINT:
+    case PixelFormat::R32G32B32A32_UINT:
+    case PixelFormat::R32G32B32A32_SINT:
+    case PixelFormat::R32G32_SINT:
+    case PixelFormat::R16_UINT:
+    case PixelFormat::R16_SINT:
+    case PixelFormat::R16G16_UINT:
+    case PixelFormat::R16G16_SINT:
+    case PixelFormat::R8G8_SINT:
+    case PixelFormat::R8G8_UINT:
+    case PixelFormat::R32G32_UINT:
+    case PixelFormat::R32_UINT:
+    case PixelFormat::R32_SINT:
         return true;
     default:
         return false;
+    }
+}
+
+bool IsPixelFormatSignedInteger(PixelFormat format) {
+    switch (format) {
+    case PixelFormat::A8B8G8R8_SINT:
+    case PixelFormat::R8_SINT:
+    case PixelFormat::R16G16B16A16_SINT:
+    case PixelFormat::R32G32B32A32_SINT:
+    case PixelFormat::R32G32_SINT:
+    case PixelFormat::R16_SINT:
+    case PixelFormat::R16G16_SINT:
+    case PixelFormat::R8G8_SINT:
+    case PixelFormat::R32_SINT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+size_t PixelComponentSizeBitsInteger(PixelFormat format) {
+    switch (format) {
+    case PixelFormat::A8B8G8R8_SINT:
+    case PixelFormat::A8B8G8R8_UINT:
+    case PixelFormat::R8_SINT:
+    case PixelFormat::R8_UINT:
+    case PixelFormat::R8G8_SINT:
+    case PixelFormat::R8G8_UINT:
+        return 8;
+    case PixelFormat::A2B10G10R10_UINT:
+        return 10;
+    case PixelFormat::R16G16B16A16_SINT:
+    case PixelFormat::R16G16B16A16_UINT:
+    case PixelFormat::R16_UINT:
+    case PixelFormat::R16_SINT:
+    case PixelFormat::R16G16_UINT:
+    case PixelFormat::R16G16_SINT:
+        return 16;
+    case PixelFormat::R32G32B32A32_UINT:
+    case PixelFormat::R32G32B32A32_SINT:
+    case PixelFormat::R32G32_SINT:
+    case PixelFormat::R32G32_UINT:
+    case PixelFormat::R32_UINT:
+    case PixelFormat::R32_SINT:
+        return 32;
+    default:
+        return 0;
+    }
+}
+
+std::pair<u32, u32> GetASTCBlockSize(PixelFormat format) {
+    return {DefaultBlockWidth(format), DefaultBlockHeight(format)};
+}
+
+u64 TranscodedAstcSize(u64 base_size, PixelFormat format) {
+    constexpr u64 RGBA8_PIXEL_SIZE = 4;
+    const u64 base_block_size = static_cast<u64>(DefaultBlockWidth(format)) *
+                                static_cast<u64>(DefaultBlockHeight(format)) * RGBA8_PIXEL_SIZE;
+    const u64 uncompressed_size = (base_size * base_block_size) / BytesPerBlock(format);
+
+    switch (Settings::values.astc_recompression.GetValue()) {
+    case Settings::AstcRecompression::Bc1:
+        return uncompressed_size / 8;
+    case Settings::AstcRecompression::Bc3:
+        return uncompressed_size / 4;
+    default:
+        return uncompressed_size;
     }
 }
 

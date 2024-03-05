@@ -1,13 +1,11 @@
-// Copyright 2019 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <cstddef>
-#include <vector>
 
-#include "common/common_types.h"
+#include "core/hle/kernel/k_typed_address.h"
 #include "core/hle/kernel/physical_memory.h"
 
 namespace Kernel {
@@ -38,7 +36,7 @@ struct CodeSet final {
         std::size_t offset = 0;
 
         /// The address to map this segment to.
-        VAddr addr = 0;
+        KProcessAddress addr = 0;
 
         /// The size of this segment in bytes.
         u32 size = 0;
@@ -77,14 +75,28 @@ struct CodeSet final {
         return segments[2];
     }
 
+#ifdef HAS_NCE
+    Segment& PatchSegment() {
+        return patch_segment;
+    }
+
+    const Segment& PatchSegment() const {
+        return patch_segment;
+    }
+#endif
+
     /// The overall data that backs this code set.
     Kernel::PhysicalMemory memory;
 
     /// The segments that comprise this code set.
     std::array<Segment, 3> segments;
 
+#ifdef HAS_NCE
+    Segment patch_segment;
+#endif
+
     /// The entry point address for this code set.
-    VAddr entrypoint = 0;
+    KProcessAddress entrypoint = 0;
 };
 
 } // namespace Kernel

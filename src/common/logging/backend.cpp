@@ -1,30 +1,181 @@
-// Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2014 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <climits>
-#include <condition_variable>
-#include <memory>
-#include <mutex>
 #include <thread>
-#include <vector>
+
+#include <fmt/format.h>
+
 #ifdef _WIN32
-#include <share.h>   // For _SH_DENYWR
 #include <windows.h> // For OutputDebugStringW
-#else
-#define _SH_DENYWR 0
 #endif
-#include "common/assert.h"
+
+#include "common/fs/file.h"
+#include "common/fs/fs.h"
+#include "common/fs/fs_paths.h"
+#include "common/fs/path_util.h"
+#include "common/literals.h"
+#include "common/polyfill_thread.h"
+#include "common/thread.h"
+
 #include "common/logging/backend.h"
 #include "common/logging/log.h"
+#include "common/logging/log_entry.h"
 #include "common/logging/text_formatter.h"
+#include "common/settings.h"
+#ifdef _WIN32
 #include "common/string_util.h"
-#include "common/threadsafe_queue.h"
+#endif
+#include "common/bounded_threadsafe_queue.h"
 
-namespace Log {
+namespace Common::Log {
+
+namespace {
+
+/**
+ * Interface for logging backends.
+ */
+class Backend {
+public:
+    virtual ~Backend() = default;
+
+    virtual void Write(const Entry& entry) = 0;
+
+    virtual void EnableForStacktrace() = 0;
+
+    virtual void Flush() = 0;
+};
+
+/**
+ * Backend that writes to stderr and with color
+ */
+class ColorConsoleBackend final : public Backend {
+public:
+    explicit ColorConsoleBackend() = default;
+
+    ~ColorConsoleBackend() override = default;
+
+    void Write(const Entry& entry) override {
+        if (enabled.load(std::memory_order_relaxed)) {
+            PrintColoredMessage(entry);
+        }
+    }
+
+    void Flush() override {
+        // stderr shouldn't be buffered
+    }
+
+    void EnableForStacktrace() override {
+        enabled = true;
+    }
+
+    void SetEnabled(bool enabled_) {
+        enabled = enabled_;
+    }
+
+private:
+    std::atomic_bool enabled{false};
+};
+
+/**
+ * Backend that writes to a file passed into the constructor
+ */
+class FileBackend final : public Backend {
+public:
+    explicit FileBackend(const std::filesystem::path& filename) {
+        auto old_filename = filename;
+        old_filename += ".old.txt";
+
+        // Existence checks are done within the functions themselves.
+        // We don't particularly care if these succeed or not.
+        static_cast<void>(FS::RemoveFile(old_filename));
+        static_cast<void>(FS::RenameFile(filename, old_filename));
+
+        file = std::make_unique<FS::IOFile>(filename, FS::FileAccessMode::Write,
+                                            FS::FileType::TextFile);
+    }
+
+    ~FileBackend() override = default;
+
+    void Write(const Entry& entry) override {
+        if (!enabled) {
+            return;
+        }
+
+        bytes_written += file->WriteString(FormatLogMessage(entry).append(1, '\n'));
+
+        using namespace Common::Literals;
+        // Prevent logs from exceeding a set maximum size in the event that log entries are spammed.
+        const auto write_limit = Settings::values.extended_logging.GetValue() ? 1_GiB : 100_MiB;
+        const bool write_limit_exceeded = bytes_written > write_limit;
+        if (entry.log_level >= Level::Error || write_limit_exceeded) {
+            if (write_limit_exceeded) {
+                // Stop writing after the write limit is exceeded.
+                // Don't close the file so we can print a stacktrace if necessary
+                enabled = false;
+            }
+            file->Flush();
+        }
+    }
+
+    void Flush() override {
+        file->Flush();
+    }
+
+    void EnableForStacktrace() override {
+        enabled = true;
+        bytes_written = 0;
+    }
+
+private:
+    std::unique_ptr<FS::IOFile> file;
+    bool enabled = true;
+    std::size_t bytes_written = 0;
+};
+
+/**
+ * Backend that writes to Visual Studio's output window
+ */
+class DebuggerBackend final : public Backend {
+public:
+    explicit DebuggerBackend() = default;
+
+    ~DebuggerBackend() override = default;
+
+    void Write(const Entry& entry) override {
+#ifdef _WIN32
+        ::OutputDebugStringW(UTF8ToUTF16W(FormatLogMessage(entry).append(1, '\n')).c_str());
+#endif
+    }
+
+    void Flush() override {}
+
+    void EnableForStacktrace() override {}
+};
+
+#ifdef ANDROID
+/**
+ * Backend that writes to the Android logcat
+ */
+class LogcatBackend : public Backend {
+public:
+    explicit LogcatBackend() = default;
+
+    ~LogcatBackend() override = default;
+
+    void Write(const Entry& entry) override {
+        PrintMessageToLogcat(entry);
+    }
+
+    void Flush() override {}
+
+    void EnableForStacktrace() override {}
+};
+#endif
+
+bool initialization_in_progress_suppress_logging = true;
 
 /**
  * Static state as a singleton.
@@ -32,292 +183,171 @@ namespace Log {
 class Impl {
 public:
     static Impl& Instance() {
-        static Impl backend;
-        return backend;
+        if (!instance) {
+            throw std::runtime_error("Using Logging instance before its initialization");
+        }
+        return *instance;
     }
 
-    Impl(Impl const&) = delete;
-    const Impl& operator=(Impl const&) = delete;
-
-    void PushEntry(Class log_class, Level log_level, const char* filename, unsigned int line_num,
-                   const char* function, std::string message) {
-        message_queue.Push(
-            CreateEntry(log_class, log_level, filename, line_num, function, std::move(message)));
+    static void Initialize() {
+        if (instance) {
+            LOG_WARNING(Log, "Reinitializing logging backend");
+            return;
+        }
+        using namespace Common::FS;
+        const auto& log_dir = GetYuzuPath(YuzuPath::LogDir);
+        void(CreateDir(log_dir));
+        Filter filter;
+        filter.ParseFilterString(Settings::values.log_filter.GetValue());
+        instance = std::unique_ptr<Impl, decltype(&Deleter)>(new Impl(log_dir / LOG_FILE, filter),
+                                                             Deleter);
+        initialization_in_progress_suppress_logging = false;
     }
 
-    void AddBackend(std::unique_ptr<Backend> backend) {
-        std::lock_guard lock{writing_mutex};
-        backends.push_back(std::move(backend));
+    static void Start() {
+        instance->StartBackendThread();
     }
 
-    void RemoveBackend(std::string_view backend_name) {
-        std::lock_guard lock{writing_mutex};
-        const auto it =
-            std::remove_if(backends.begin(), backends.end(),
-                           [&backend_name](const auto& i) { return backend_name == i->GetName(); });
-        backends.erase(it, backends.end());
+    static void Stop() {
+        instance->StopBackendThread();
     }
 
-    const Filter& GetGlobalFilter() const {
-        return filter;
-    }
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = delete;
+    Impl& operator=(Impl&&) = delete;
 
     void SetGlobalFilter(const Filter& f) {
         filter = f;
     }
 
-    Backend* GetBackend(std::string_view backend_name) {
-        const auto it =
-            std::find_if(backends.begin(), backends.end(),
-                         [&backend_name](const auto& i) { return backend_name == i->GetName(); });
-        if (it == backends.end())
-            return nullptr;
-        return it->get();
+    void SetColorConsoleBackendEnabled(bool enabled) {
+        color_console_backend.SetEnabled(enabled);
+    }
+
+    void PushEntry(Class log_class, Level log_level, const char* filename, unsigned int line_num,
+                   const char* function, std::string&& message) {
+        if (!filter.CheckMessage(log_class, log_level)) {
+            return;
+        }
+        message_queue.EmplaceWait(
+            CreateEntry(log_class, log_level, filename, line_num, function, std::move(message)));
     }
 
 private:
-    Impl() {
-        backend_thread = std::thread([&] {
-            Entry entry;
-            auto write_logs = [&](Entry& e) {
-                std::lock_guard lock{writing_mutex};
-                for (const auto& backend : backends) {
-                    backend->Write(e);
-                }
-            };
-            while (true) {
-                entry = message_queue.PopWait();
-                if (entry.final_entry) {
-                    break;
-                }
-                write_logs(entry);
-            }
+    Impl(const std::filesystem::path& file_backend_filename, const Filter& filter_)
+        : filter{filter_}, file_backend{file_backend_filename} {}
 
-            // Drain the logging queue. Only writes out up to MAX_LOGS_TO_WRITE to prevent a case
-            // where a system is repeatedly spamming logs even on close.
-            const int MAX_LOGS_TO_WRITE = filter.IsDebug() ? INT_MAX : 100;
-            int logs_written = 0;
-            while (logs_written++ < MAX_LOGS_TO_WRITE && message_queue.Pop(entry)) {
-                write_logs(entry);
+    ~Impl() = default;
+
+    void StartBackendThread() {
+        backend_thread = std::jthread([this](std::stop_token stop_token) {
+            Common::SetCurrentThreadName("Logger");
+            Entry entry;
+            const auto write_logs = [this, &entry]() {
+                ForEachBackend([&entry](Backend& backend) { backend.Write(entry); });
+            };
+            while (!stop_token.stop_requested()) {
+                message_queue.PopWait(entry, stop_token);
+                if (entry.filename != nullptr) {
+                    write_logs();
+                }
+            }
+            // Drain the logging queue. Only writes out up to MAX_LOGS_TO_WRITE to prevent a
+            // case where a system is repeatedly spamming logs even on close.
+            int max_logs_to_write = filter.IsDebug() ? INT_MAX : 100;
+            while (max_logs_to_write-- && message_queue.TryPop(entry)) {
+                write_logs();
             }
         });
     }
 
-    ~Impl() {
-        Entry entry;
-        entry.final_entry = true;
-        message_queue.Push(entry);
-        backend_thread.join();
+    void StopBackendThread() {
+        backend_thread.request_stop();
+        if (backend_thread.joinable()) {
+            backend_thread.join();
+        }
+
+        ForEachBackend([](Backend& backend) { backend.Flush(); });
     }
 
     Entry CreateEntry(Class log_class, Level log_level, const char* filename, unsigned int line_nr,
-                      const char* function, std::string message) const {
+                      const char* function, std::string&& message) const {
         using std::chrono::duration_cast;
+        using std::chrono::microseconds;
         using std::chrono::steady_clock;
 
-        Entry entry;
-        entry.timestamp =
-            duration_cast<std::chrono::microseconds>(steady_clock::now() - time_origin);
-        entry.log_class = log_class;
-        entry.log_level = log_level;
-        entry.filename = Common::TrimSourcePath(filename);
-        entry.line_num = line_nr;
-        entry.function = function;
-        entry.message = std::move(message);
-
-        return entry;
+        return {
+            .timestamp = duration_cast<microseconds>(steady_clock::now() - time_origin),
+            .log_class = log_class,
+            .log_level = log_level,
+            .filename = filename,
+            .line_num = line_nr,
+            .function = function,
+            .message = std::move(message),
+        };
     }
 
-    std::mutex writing_mutex;
-    std::thread backend_thread;
-    std::vector<std::unique_ptr<Backend>> backends;
-    Common::MPSCQueue<Log::Entry> message_queue;
-    Filter filter;
-    std::chrono::steady_clock::time_point time_origin{std::chrono::steady_clock::now()};
-};
-
-void ConsoleBackend::Write(const Entry& entry) {
-    PrintMessage(entry);
-}
-
-void ColorConsoleBackend::Write(const Entry& entry) {
-    PrintColoredMessage(entry);
-}
-
-// _SH_DENYWR allows read only access to the file for other programs.
-// It is #defined to 0 on other platforms
-FileBackend::FileBackend(const std::string& filename)
-    : file(filename, "w", _SH_DENYWR), bytes_written(0) {}
-
-void FileBackend::Write(const Entry& entry) {
-    // prevent logs from going over the maximum size (in case its spamming and the user doesn't
-    // know)
-    constexpr std::size_t MAX_BYTES_WRITTEN = 50 * 1024L * 1024L;
-    if (!file.IsOpen() || bytes_written > MAX_BYTES_WRITTEN) {
-        return;
-    }
-    bytes_written += file.WriteString(FormatLogMessage(entry).append(1, '\n'));
-    if (entry.log_level >= Level::Error) {
-        file.Flush();
-    }
-}
-
-void DebuggerBackend::Write(const Entry& entry) {
-#ifdef _WIN32
-    ::OutputDebugStringW(Common::UTF8ToUTF16W(FormatLogMessage(entry).append(1, '\n')).c_str());
+    void ForEachBackend(auto lambda) {
+        lambda(static_cast<Backend&>(debugger_backend));
+        lambda(static_cast<Backend&>(color_console_backend));
+        lambda(static_cast<Backend&>(file_backend));
+#ifdef ANDROID
+        lambda(static_cast<Backend&>(lc_backend));
 #endif
+    }
+
+    static void Deleter(Impl* ptr) {
+        delete ptr;
+    }
+
+    static inline std::unique_ptr<Impl, decltype(&Deleter)> instance{nullptr, Deleter};
+
+    Filter filter;
+    DebuggerBackend debugger_backend{};
+    ColorConsoleBackend color_console_backend{};
+    FileBackend file_backend;
+#ifdef ANDROID
+    LogcatBackend lc_backend{};
+#endif
+
+    MPSCQueue<Entry> message_queue{};
+    std::chrono::steady_clock::time_point time_origin{std::chrono::steady_clock::now()};
+    std::jthread backend_thread;
+};
+} // namespace
+
+void Initialize() {
+    Impl::Initialize();
 }
 
-/// Macro listing all log classes. Code should define CLS and SUB as desired before invoking this.
-#define ALL_LOG_CLASSES()                                                                          \
-    CLS(Log)                                                                                       \
-    CLS(Common)                                                                                    \
-    SUB(Common, Filesystem)                                                                        \
-    SUB(Common, Memory)                                                                            \
-    CLS(Core)                                                                                      \
-    SUB(Core, ARM)                                                                                 \
-    SUB(Core, Timing)                                                                              \
-    CLS(Config)                                                                                    \
-    CLS(Debug)                                                                                     \
-    SUB(Debug, Emulated)                                                                           \
-    SUB(Debug, GPU)                                                                                \
-    SUB(Debug, Breakpoint)                                                                         \
-    SUB(Debug, GDBStub)                                                                            \
-    CLS(Kernel)                                                                                    \
-    SUB(Kernel, SVC)                                                                               \
-    CLS(Service)                                                                                   \
-    SUB(Service, ACC)                                                                              \
-    SUB(Service, Audio)                                                                            \
-    SUB(Service, AM)                                                                               \
-    SUB(Service, AOC)                                                                              \
-    SUB(Service, APM)                                                                              \
-    SUB(Service, ARP)                                                                              \
-    SUB(Service, BCAT)                                                                             \
-    SUB(Service, BPC)                                                                              \
-    SUB(Service, BTDRV)                                                                            \
-    SUB(Service, BTM)                                                                              \
-    SUB(Service, Capture)                                                                          \
-    SUB(Service, ERPT)                                                                             \
-    SUB(Service, ETicket)                                                                          \
-    SUB(Service, EUPLD)                                                                            \
-    SUB(Service, Fatal)                                                                            \
-    SUB(Service, FGM)                                                                              \
-    SUB(Service, Friend)                                                                           \
-    SUB(Service, FS)                                                                               \
-    SUB(Service, GRC)                                                                              \
-    SUB(Service, HID)                                                                              \
-    SUB(Service, IRS)                                                                              \
-    SUB(Service, LBL)                                                                              \
-    SUB(Service, LDN)                                                                              \
-    SUB(Service, LDR)                                                                              \
-    SUB(Service, LM)                                                                               \
-    SUB(Service, Migration)                                                                        \
-    SUB(Service, Mii)                                                                              \
-    SUB(Service, MM)                                                                               \
-    SUB(Service, NCM)                                                                              \
-    SUB(Service, NFC)                                                                              \
-    SUB(Service, NFP)                                                                              \
-    SUB(Service, NIFM)                                                                             \
-    SUB(Service, NIM)                                                                              \
-    SUB(Service, NPNS)                                                                             \
-    SUB(Service, NS)                                                                               \
-    SUB(Service, NVDRV)                                                                            \
-    SUB(Service, PCIE)                                                                             \
-    SUB(Service, PCTL)                                                                             \
-    SUB(Service, PCV)                                                                              \
-    SUB(Service, PM)                                                                               \
-    SUB(Service, PREPO)                                                                            \
-    SUB(Service, PSC)                                                                              \
-    SUB(Service, PSM)                                                                              \
-    SUB(Service, SET)                                                                              \
-    SUB(Service, SM)                                                                               \
-    SUB(Service, SPL)                                                                              \
-    SUB(Service, SSL)                                                                              \
-    SUB(Service, TCAP)                                                                             \
-    SUB(Service, Time)                                                                             \
-    SUB(Service, USB)                                                                              \
-    SUB(Service, VI)                                                                               \
-    SUB(Service, WLAN)                                                                             \
-    CLS(HW)                                                                                        \
-    SUB(HW, Memory)                                                                                \
-    SUB(HW, LCD)                                                                                   \
-    SUB(HW, GPU)                                                                                   \
-    SUB(HW, AES)                                                                                   \
-    CLS(IPC)                                                                                       \
-    CLS(Frontend)                                                                                  \
-    CLS(Render)                                                                                    \
-    SUB(Render, Software)                                                                          \
-    SUB(Render, OpenGL)                                                                            \
-    SUB(Render, Vulkan)                                                                            \
-    CLS(Audio)                                                                                     \
-    SUB(Audio, DSP)                                                                                \
-    SUB(Audio, Sink)                                                                               \
-    CLS(Input)                                                                                     \
-    CLS(Network)                                                                                   \
-    CLS(Loader)                                                                                    \
-    CLS(CheatEngine)                                                                               \
-    CLS(Crypto)                                                                                    \
-    CLS(WebService)
-
-// GetClassName is a macro defined by Windows.h, grrr...
-const char* GetLogClassName(Class log_class) {
-    switch (log_class) {
-#define CLS(x)                                                                                     \
-    case Class::x:                                                                                 \
-        return #x;
-#define SUB(x, y)                                                                                  \
-    case Class::x##_##y:                                                                           \
-        return #x "." #y;
-        ALL_LOG_CLASSES()
-#undef CLS
-#undef SUB
-    case Class::Count:
-        UNREACHABLE();
-    }
+void Start() {
+    Impl::Start();
 }
 
-const char* GetLevelName(Level log_level) {
-#define LVL(x)                                                                                     \
-    case Level::x:                                                                                 \
-        return #x
-    switch (log_level) {
-        LVL(Trace);
-        LVL(Debug);
-        LVL(Info);
-        LVL(Warning);
-        LVL(Error);
-        LVL(Critical);
-    case Level::Count:
-        UNREACHABLE();
-    }
-#undef LVL
+void Stop() {
+    Impl::Stop();
+}
+
+void DisableLoggingInTests() {
+    initialization_in_progress_suppress_logging = true;
 }
 
 void SetGlobalFilter(const Filter& filter) {
     Impl::Instance().SetGlobalFilter(filter);
 }
 
-void AddBackend(std::unique_ptr<Backend> backend) {
-    Impl::Instance().AddBackend(std::move(backend));
-}
-
-void RemoveBackend(std::string_view backend_name) {
-    Impl::Instance().RemoveBackend(backend_name);
-}
-
-Backend* GetBackend(std::string_view backend_name) {
-    return Impl::Instance().GetBackend(backend_name);
+void SetColorConsoleBackendEnabled(bool enabled) {
+    Impl::Instance().SetColorConsoleBackendEnabled(enabled);
 }
 
 void FmtLogMessageImpl(Class log_class, Level log_level, const char* filename,
                        unsigned int line_num, const char* function, const char* format,
                        const fmt::format_args& args) {
-    auto& instance = Impl::Instance();
-    const auto& filter = instance.GetGlobalFilter();
-    if (!filter.CheckMessage(log_class, log_level))
-        return;
-
-    instance.PushEntry(log_class, log_level, filename, line_num, function,
-                       fmt::vformat(format, args));
+    if (!initialization_in_progress_suppress_logging) {
+        Impl::Instance().PushEntry(log_class, log_level, filename, line_num, function,
+                                   fmt::vformat(format, args));
+    }
 }
-} // namespace Log
+} // namespace Common::Log

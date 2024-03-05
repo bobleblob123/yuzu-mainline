@@ -1,167 +1,91 @@
-// Copyright 2018 yuzu Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
-#include <array>
-#include <atomic>
-#include <bitset>
-#include <memory>
-#include <string>
-#include <tuple>
+#include <filesystem>
 #include <unordered_map>
-#include <unordered_set>
-#include <vector>
-
-#include <glad/glad.h>
 
 #include "common/common_types.h"
-#include "video_core/rasterizer_cache.h"
-#include "video_core/renderer_opengl/gl_resource_manager.h"
-#include "video_core/renderer_opengl/gl_shader_decompiler.h"
-#include "video_core/renderer_opengl/gl_shader_disk_cache.h"
-#include "video_core/shader/const_buffer_locker.h"
-#include "video_core/shader/shader_ir.h"
+#include "common/thread_worker.h"
+#include "shader_recompiler/host_translate_info.h"
+#include "shader_recompiler/profile.h"
+#include "video_core/renderer_opengl/gl_compute_pipeline.h"
+#include "video_core/renderer_opengl/gl_graphics_pipeline.h"
+#include "video_core/renderer_opengl/gl_shader_context.h"
+#include "video_core/shader_cache.h"
 
-namespace Core {
-class System;
-}
-
-namespace Core::Frontend {
-class EmuWindow;
-}
+namespace Tegra {
+class MemoryManager;
+} // namespace Tegra
 
 namespace OpenGL {
 
-class CachedShader;
 class Device;
+class ProgramManager;
 class RasterizerOpenGL;
-struct UnspecializedShader;
+using ShaderWorker = Common::StatefulThreadWorker<ShaderContext::Context>;
 
-using Shader = std::shared_ptr<CachedShader>;
-using CachedProgram = std::shared_ptr<OGLProgram>;
-using Maxwell = Tegra::Engines::Maxwell3D::Regs;
-using PrecompiledPrograms = std::unordered_map<ShaderDiskCacheUsage, CachedProgram>;
-using PrecompiledVariants = std::vector<PrecompiledPrograms::iterator>;
-
-struct UnspecializedShader {
-    GLShader::ShaderEntries entries;
-    ProgramType program_type;
-    ProgramCode code;
-    ProgramCode code_b;
-};
-
-struct ShaderParameters {
-    Core::System& system;
-    ShaderDiskCacheOpenGL& disk_cache;
-    const PrecompiledVariants* precompiled_variants;
-    const Device& device;
-    VAddr cpu_addr;
-    u8* host_ptr;
-    u64 unique_identifier;
-};
-
-class CachedShader final : public RasterizerCacheObject {
+class ShaderCache : public VideoCommon::ShaderCache {
 public:
-    static Shader CreateStageFromMemory(const ShaderParameters& params,
-                                        Maxwell::ShaderProgram program_type,
-                                        ProgramCode program_code, ProgramCode program_code_b);
-    static Shader CreateKernelFromMemory(const ShaderParameters& params, ProgramCode code);
+    explicit ShaderCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
+                         Core::Frontend::EmuWindow& emu_window_, const Device& device_,
+                         TextureCache& texture_cache_, BufferCache& buffer_cache_,
+                         ProgramManager& program_manager_, StateTracker& state_tracker_,
+                         VideoCore::ShaderNotify& shader_notify_);
+    ~ShaderCache();
 
-    static Shader CreateFromCache(const ShaderParameters& params,
-                                  const UnspecializedShader& unspecialized);
+    void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
+                           const VideoCore::DiskResourceLoadCallback& callback);
 
-    VAddr GetCpuAddr() const override {
-        return cpu_addr;
-    }
+    [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipeline();
 
-    std::size_t GetSizeInBytes() const override {
-        return program_code.size() * sizeof(u64);
-    }
-
-    /// Gets the shader entries for the shader
-    const GLShader::ShaderEntries& GetShaderEntries() const {
-        return entries;
-    }
-
-    /// Gets the GL program handle for the shader
-    std::tuple<GLuint, BaseBindings> GetProgramHandle(const ProgramVariant& variant);
+    [[nodiscard]] ComputePipeline* CurrentComputePipeline();
 
 private:
-    struct LockerVariant {
-        std::unique_ptr<VideoCommon::Shader::ConstBufferLocker> locker;
-        std::unordered_map<ProgramVariant, CachedProgram> programs;
-    };
+    GraphicsPipeline* CurrentGraphicsPipelineSlowPath();
 
-    explicit CachedShader(const ShaderParameters& params, ProgramType program_type,
-                          GLShader::ShaderEntries entries, ProgramCode program_code,
-                          ProgramCode program_code_b);
+    [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline) const noexcept;
 
-    void UpdateVariant();
+    std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline();
 
-    ShaderDiskCacheUsage GetUsage(const ProgramVariant& variant,
-                                  const VideoCommon::Shader::ConstBufferLocker& locker) const;
+    std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
+        ShaderContext::ShaderPools& pools, const GraphicsPipelineKey& key,
+        std::span<Shader::Environment* const> envs, bool use_shader_workers,
+        bool force_context_flush = false);
 
-    Core::System& system;
-    ShaderDiskCacheOpenGL& disk_cache;
-    const Device& device;
+    std::unique_ptr<ComputePipeline> CreateComputePipeline(const ComputePipelineKey& key,
+                                                           const VideoCommon::ShaderInfo* shader);
 
-    VAddr cpu_addr{};
+    std::unique_ptr<ComputePipeline> CreateComputePipeline(ShaderContext::ShaderPools& pools,
+                                                           const ComputePipelineKey& key,
+                                                           Shader::Environment& env,
+                                                           bool force_context_flush = false);
 
-    u64 unique_identifier{};
-    ProgramType program_type{};
+    std::unique_ptr<ShaderWorker> CreateWorkers() const;
 
-    GLShader::ShaderEntries entries;
-
-    ProgramCode program_code;
-    ProgramCode program_code_b;
-
-    LockerVariant* curr_variant = nullptr;
-    std::vector<std::unique_ptr<LockerVariant>> locker_variants;
-};
-
-class ShaderCacheOpenGL final : public RasterizerCache<Shader> {
-public:
-    explicit ShaderCacheOpenGL(RasterizerOpenGL& rasterizer, Core::System& system,
-                               Core::Frontend::EmuWindow& emu_window, const Device& device);
-
-    /// Loads disk cache for the current game
-    void LoadDiskCache(const std::atomic_bool& stop_loading,
-                       const VideoCore::DiskResourceLoadCallback& callback);
-
-    /// Gets the current specified shader stage program
-    Shader GetStageProgram(Maxwell::ShaderProgram program);
-
-    /// Gets a compute kernel in the passed address
-    Shader GetComputeKernel(GPUVAddr code_addr);
-
-protected:
-    // We do not have to flush this cache as things in it are never modified by us.
-    void FlushObjectInner(const Shader& object) override {}
-
-private:
-    bool GenerateUnspecializedShaders(const std::atomic_bool& stop_loading,
-                                      const VideoCore::DiskResourceLoadCallback& callback,
-                                      const std::vector<ShaderDiskCacheRaw>& raws);
-
-    CachedProgram GeneratePrecompiledProgram(const ShaderDiskCacheDump& dump,
-                                             const std::unordered_set<GLenum>& supported_formats);
-
-    const PrecompiledVariants* GetPrecompiledVariants(u64 unique_identifier) const;
-
-    Core::System& system;
     Core::Frontend::EmuWindow& emu_window;
     const Device& device;
+    TextureCache& texture_cache;
+    BufferCache& buffer_cache;
+    ProgramManager& program_manager;
+    StateTracker& state_tracker;
+    VideoCore::ShaderNotify& shader_notify;
+    const bool use_asynchronous_shaders;
+    const bool strict_context_required;
 
-    ShaderDiskCacheOpenGL disk_cache;
+    GraphicsPipelineKey graphics_key{};
+    GraphicsPipeline* current_pipeline{};
 
-    PrecompiledPrograms precompiled_programs;
-    std::unordered_map<u64, PrecompiledVariants> precompiled_variants;
+    ShaderContext::ShaderPools main_pools;
+    std::unordered_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>> graphics_cache;
+    std::unordered_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>> compute_cache;
 
-    std::unordered_map<u64, UnspecializedShader> unspecialized_shaders;
+    Shader::Profile profile;
+    Shader::HostTranslateInfo host_info;
 
-    std::array<Shader, Maxwell::MaxShaderProgram> last_shaders;
+    std::filesystem::path shader_cache_filename;
+    std::unique_ptr<ShaderWorker> workers;
 };
 
 } // namespace OpenGL

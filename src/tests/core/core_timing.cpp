@@ -1,204 +1,141 @@
-// Copyright 2016 Dolphin Emulator Project / 2017 Dolphin Emulator Project
-// Licensed under GPLv2+
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2016 Dolphin Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <array>
 #include <bitset>
+#include <chrono>
 #include <cstdlib>
+#include <memory>
+#include <optional>
 #include <string>
-#include "common/file_util.h"
+
 #include "core/core.h"
 #include "core/core_timing.h"
 
+namespace {
 // Numbers are chosen randomly to make sure the correct one is given.
-static constexpr std::array<u64, 5> CB_IDS{{42, 144, 93, 1026, UINT64_C(0xFFFF7FFFF7FFFF)}};
-static constexpr int MAX_SLICE_LENGTH = 10000; // Copied from CoreTiming internals
-
-static std::bitset<CB_IDS.size()> callbacks_ran_flags;
-static u64 expected_callback = 0;
-static s64 lateness = 0;
+constexpr std::array<u64, 5> calls_order{{2, 0, 1, 4, 3}};
+std::array<s64, 5> delays{};
+std::bitset<5> callbacks_ran_flags;
+u64 expected_callback = 0;
 
 template <unsigned int IDX>
-void CallbackTemplate(u64 userdata, s64 cycles_late) {
-    static_assert(IDX < CB_IDS.size(), "IDX out of range");
+std::optional<std::chrono::nanoseconds> HostCallbackTemplate(s64 time,
+                                                             std::chrono::nanoseconds ns_late) {
+    static_assert(IDX < callbacks_ran_flags.size(), "IDX out of range");
     callbacks_ran_flags.set(IDX);
-    REQUIRE(CB_IDS[IDX] == userdata);
-    REQUIRE(CB_IDS[IDX] == expected_callback);
-    REQUIRE(lateness == cycles_late);
-}
-
-static u64 callbacks_done = 0;
-
-void EmptyCallback(u64 userdata, s64 cycles_late) {
-    ++callbacks_done;
+    delays[IDX] = ns_late.count();
+    ++expected_callback;
+    return std::nullopt;
 }
 
 struct ScopeInit final {
     ScopeInit() {
-        core_timing.Initialize();
-    }
-    ~ScopeInit() {
-        core_timing.Shutdown();
+        core_timing.SetMulticore(true);
+        core_timing.Initialize([]() {});
     }
 
     Core::Timing::CoreTiming core_timing;
 };
 
-static void AdvanceAndCheck(Core::Timing::CoreTiming& core_timing, u32 idx, u32 context = 0,
-                            int expected_lateness = 0, int cpu_downcount = 0) {
-    callbacks_ran_flags = 0;
-    expected_callback = CB_IDS[idx];
-    lateness = expected_lateness;
-
-    // Pretend we executed X cycles of instructions.
-    core_timing.SwitchContext(context);
-    core_timing.AddTicks(core_timing.GetDowncount() - cpu_downcount);
-    core_timing.Advance();
-    core_timing.SwitchContext((context + 1) % 4);
-
-    REQUIRE(decltype(callbacks_ran_flags)().set(idx) == callbacks_ran_flags);
+u64 TestTimerSpeed(Core::Timing::CoreTiming& core_timing) {
+    const u64 start = core_timing.GetGlobalTimeNs().count();
+    volatile u64 placebo = 0;
+    for (std::size_t i = 0; i < 1000; i++) {
+        placebo = placebo + core_timing.GetGlobalTimeNs().count();
+    }
+    const u64 end = core_timing.GetGlobalTimeNs().count();
+    return end - start;
 }
+
+} // Anonymous namespace
 
 TEST_CASE("CoreTiming[BasicOrder]", "[core]") {
     ScopeInit guard;
     auto& core_timing = guard.core_timing;
+    std::vector<std::shared_ptr<Core::Timing::EventType>> events{
+        Core::Timing::CreateEvent("callbackA", HostCallbackTemplate<0>),
+        Core::Timing::CreateEvent("callbackB", HostCallbackTemplate<1>),
+        Core::Timing::CreateEvent("callbackC", HostCallbackTemplate<2>),
+        Core::Timing::CreateEvent("callbackD", HostCallbackTemplate<3>),
+        Core::Timing::CreateEvent("callbackE", HostCallbackTemplate<4>),
+    };
 
-    Core::Timing::EventType* cb_a = core_timing.RegisterEvent("callbackA", CallbackTemplate<0>);
-    Core::Timing::EventType* cb_b = core_timing.RegisterEvent("callbackB", CallbackTemplate<1>);
-    Core::Timing::EventType* cb_c = core_timing.RegisterEvent("callbackC", CallbackTemplate<2>);
-    Core::Timing::EventType* cb_d = core_timing.RegisterEvent("callbackD", CallbackTemplate<3>);
-    Core::Timing::EventType* cb_e = core_timing.RegisterEvent("callbackE", CallbackTemplate<4>);
+    expected_callback = 0;
 
-    // Enter slice 0
-    core_timing.ResetRun();
+    core_timing.SyncPause(true);
 
-    // D -> B -> C -> A -> E
-    core_timing.SwitchContext(0);
-    core_timing.ScheduleEvent(1000, cb_a, CB_IDS[0]);
-    REQUIRE(1000 == core_timing.GetDowncount());
-    core_timing.ScheduleEvent(500, cb_b, CB_IDS[1]);
-    REQUIRE(500 == core_timing.GetDowncount());
-    core_timing.ScheduleEvent(800, cb_c, CB_IDS[2]);
-    REQUIRE(500 == core_timing.GetDowncount());
-    core_timing.ScheduleEvent(100, cb_d, CB_IDS[3]);
-    REQUIRE(100 == core_timing.GetDowncount());
-    core_timing.ScheduleEvent(1200, cb_e, CB_IDS[4]);
-    REQUIRE(100 == core_timing.GetDowncount());
+    const u64 one_micro = 1000U;
+    for (std::size_t i = 0; i < events.size(); i++) {
+        const u64 order = calls_order[i];
+        const auto future_ns = std::chrono::nanoseconds{static_cast<s64>(i * one_micro + 100)};
 
-    AdvanceAndCheck(core_timing, 3, 0);
-    AdvanceAndCheck(core_timing, 1, 1);
-    AdvanceAndCheck(core_timing, 2, 2);
-    AdvanceAndCheck(core_timing, 0, 3);
-    AdvanceAndCheck(core_timing, 4, 0);
-}
-
-TEST_CASE("CoreTiming[FairSharing]", "[core]") {
-
-    ScopeInit guard;
-    auto& core_timing = guard.core_timing;
-
-    Core::Timing::EventType* empty_callback =
-        core_timing.RegisterEvent("empty_callback", EmptyCallback);
-
-    callbacks_done = 0;
-    u64 MAX_CALLBACKS = 10;
-    for (std::size_t i = 0; i < 10; i++) {
-        core_timing.ScheduleEvent(i * 3333U, empty_callback, 0);
+        core_timing.ScheduleEvent(future_ns, events[order]);
     }
+    /// test pause
+    REQUIRE(callbacks_ran_flags.none());
 
-    const s64 advances = MAX_SLICE_LENGTH / 10;
-    core_timing.ResetRun();
-    u64 current_time = core_timing.GetTicks();
-    bool keep_running{};
-    do {
-        keep_running = false;
-        for (u32 active_core = 0; active_core < 4; ++active_core) {
-            core_timing.SwitchContext(active_core);
-            if (core_timing.CanCurrentContextRun()) {
-                core_timing.AddTicks(std::min<s64>(advances, core_timing.GetDowncount()));
-                core_timing.Advance();
-            }
-            keep_running |= core_timing.CanCurrentContextRun();
-        }
-    } while (keep_running);
-    u64 current_time_2 = core_timing.GetTicks();
+    core_timing.Pause(false); // No need to sync
 
-    REQUIRE(MAX_CALLBACKS == callbacks_done);
-    REQUIRE(current_time_2 == current_time + MAX_SLICE_LENGTH * 4);
-}
+    while (core_timing.HasPendingEvents())
+        ;
 
-TEST_CASE("Core::Timing[PredictableLateness]", "[core]") {
-    ScopeInit guard;
-    auto& core_timing = guard.core_timing;
+    REQUIRE(callbacks_ran_flags.all());
 
-    Core::Timing::EventType* cb_a = core_timing.RegisterEvent("callbackA", CallbackTemplate<0>);
-    Core::Timing::EventType* cb_b = core_timing.RegisterEvent("callbackB", CallbackTemplate<1>);
-
-    // Enter slice 0
-    core_timing.ResetRun();
-
-    core_timing.ScheduleEvent(100, cb_a, CB_IDS[0]);
-    core_timing.ScheduleEvent(200, cb_b, CB_IDS[1]);
-
-    AdvanceAndCheck(core_timing, 0, 0, 10, -10); // (100 - 10)
-    AdvanceAndCheck(core_timing, 1, 1, 50, -50);
-}
-
-namespace ChainSchedulingTest {
-static int reschedules = 0;
-
-static void RescheduleCallback(Core::Timing::CoreTiming& core_timing, u64 userdata,
-                               s64 cycles_late) {
-    --reschedules;
-    REQUIRE(reschedules >= 0);
-    REQUIRE(lateness == cycles_late);
-
-    if (reschedules > 0) {
-        core_timing.ScheduleEvent(1000, reinterpret_cast<Core::Timing::EventType*>(userdata),
-                                  userdata);
+    for (std::size_t i = 0; i < delays.size(); i++) {
+        const double delay = static_cast<double>(delays[i]);
+        const double micro = delay / 1000.0f;
+        const double mili = micro / 1000.0f;
+        printf("HostTimer Pausing Delay[%zu]: %.3f %.6f\n", i, micro, mili);
     }
 }
-} // namespace ChainSchedulingTest
 
-TEST_CASE("CoreTiming[ChainScheduling]", "[core]") {
-    using namespace ChainSchedulingTest;
-
+TEST_CASE("CoreTiming[BasicOrderNoPausing]", "[core]") {
     ScopeInit guard;
     auto& core_timing = guard.core_timing;
+    std::vector<std::shared_ptr<Core::Timing::EventType>> events{
+        Core::Timing::CreateEvent("callbackA", HostCallbackTemplate<0>),
+        Core::Timing::CreateEvent("callbackB", HostCallbackTemplate<1>),
+        Core::Timing::CreateEvent("callbackC", HostCallbackTemplate<2>),
+        Core::Timing::CreateEvent("callbackD", HostCallbackTemplate<3>),
+        Core::Timing::CreateEvent("callbackE", HostCallbackTemplate<4>),
+    };
 
-    Core::Timing::EventType* cb_a = core_timing.RegisterEvent("callbackA", CallbackTemplate<0>);
-    Core::Timing::EventType* cb_b = core_timing.RegisterEvent("callbackB", CallbackTemplate<1>);
-    Core::Timing::EventType* cb_c = core_timing.RegisterEvent("callbackC", CallbackTemplate<2>);
-    Core::Timing::EventType* cb_rs = core_timing.RegisterEvent(
-        "callbackReschedule", [&core_timing](u64 userdata, s64 cycles_late) {
-            RescheduleCallback(core_timing, userdata, cycles_late);
-        });
+    core_timing.SyncPause(true);
+    core_timing.SyncPause(false);
 
-    // Enter slice 0
-    core_timing.ResetRun();
+    expected_callback = 0;
 
-    core_timing.ScheduleEvent(800, cb_a, CB_IDS[0]);
-    core_timing.ScheduleEvent(1000, cb_b, CB_IDS[1]);
-    core_timing.ScheduleEvent(2200, cb_c, CB_IDS[2]);
-    core_timing.ScheduleEvent(1000, cb_rs, reinterpret_cast<u64>(cb_rs));
-    REQUIRE(800 == core_timing.GetDowncount());
+    const u64 start = core_timing.GetGlobalTimeNs().count();
+    const u64 one_micro = 1000U;
 
-    reschedules = 3;
-    AdvanceAndCheck(core_timing, 0, 0); // cb_a
-    AdvanceAndCheck(core_timing, 1, 1); // cb_b, cb_rs
-    REQUIRE(2 == reschedules);
+    for (std::size_t i = 0; i < events.size(); i++) {
+        const u64 order = calls_order[i];
+        const auto future_ns = std::chrono::nanoseconds{static_cast<s64>(i * one_micro + 100)};
+        core_timing.ScheduleEvent(future_ns, events[order]);
+    }
 
-    core_timing.AddTicks(core_timing.GetDowncount());
-    core_timing.Advance(); // cb_rs
-    core_timing.SwitchContext(3);
-    REQUIRE(1 == reschedules);
-    REQUIRE(200 == core_timing.GetDowncount());
+    const u64 end = core_timing.GetGlobalTimeNs().count();
+    const double scheduling_time = static_cast<double>(end - start);
+    const double timer_time = static_cast<double>(TestTimerSpeed(core_timing));
 
-    AdvanceAndCheck(core_timing, 2, 3); // cb_c
+    while (core_timing.HasPendingEvents())
+        ;
 
-    core_timing.AddTicks(core_timing.GetDowncount());
-    core_timing.Advance(); // cb_rs
-    REQUIRE(0 == reschedules);
+    REQUIRE(callbacks_ran_flags.all());
+
+    for (std::size_t i = 0; i < delays.size(); i++) {
+        const double delay = static_cast<double>(delays[i]);
+        const double micro = delay / 1000.0f;
+        const double mili = micro / 1000.0f;
+        printf("HostTimer No Pausing Delay[%zu]: %.3f %.6f\n", i, micro, mili);
+    }
+
+    const double micro = scheduling_time / 1000.0f;
+    const double mili = micro / 1000.0f;
+    printf("HostTimer No Pausing Scheduling Time: %.3f %.6f\n", micro, mili);
+    printf("HostTimer No Pausing Timer Time: %.3f %.6f\n", timer_time / 1000.f,
+           timer_time / 1000000.f);
 }

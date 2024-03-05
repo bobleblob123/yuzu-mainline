@@ -1,21 +1,20 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <memory>
 
 #include "core/file_sys/romfs_factory.h"
-#include "core/hle/ipc_helpers.h"
+#include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/ncm/ncm.h"
+#include "core/hle/service/server_manager.h"
 #include "core/hle/service/service.h"
-#include "core/hle/service/sm/sm.h"
 
 namespace Service::NCM {
 
 class ILocationResolver final : public ServiceFramework<ILocationResolver> {
 public:
-    explicit ILocationResolver(FileSys::StorageId id)
-        : ServiceFramework{"ILocationResolver"}, storage(id) {
+    explicit ILocationResolver(Core::System& system_, FileSys::StorageId id)
+        : ServiceFramework{system_, "ILocationResolver"}, storage{id} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, nullptr, "ResolveProgramPath"},
@@ -28,16 +27,16 @@ public:
             {7, nullptr, "ResolveApplicationLegalInformationPath"},
             {8, nullptr, "RedirectApplicationLegalInformationPath"},
             {9, nullptr, "Refresh"},
-            {10, nullptr, "RedirectProgramPath2"},
-            {11, nullptr, "Refresh2"},
-            {12, nullptr, "DeleteProgramPath"},
-            {13, nullptr, "DeleteApplicationControlPath"},
-            {14, nullptr, "DeleteApplicationHtmlDocumentPath"},
-            {15, nullptr, "DeleteApplicationLegalInformationPath"},
-            {16, nullptr, ""},
-            {17, nullptr, ""},
-            {18, nullptr, ""},
-            {19, nullptr, ""},
+            {10, nullptr, "RedirectApplicationProgramPath"},
+            {11, nullptr, "ClearApplicationRedirection"},
+            {12, nullptr, "EraseProgramRedirection"},
+            {13, nullptr, "EraseApplicationControlRedirection"},
+            {14, nullptr, "EraseApplicationHtmlDocumentRedirection"},
+            {15, nullptr, "EraseApplicationLegalInformationRedirection"},
+            {16, nullptr, "ResolveProgramPathForDebug"},
+            {17, nullptr, "RedirectProgramPathForDebug"},
+            {18, nullptr, "RedirectApplicationProgramPathForDebug"},
+            {19, nullptr, "EraseProgramRedirectionForDebug"},
         };
         // clang-format on
 
@@ -45,12 +44,13 @@ public:
     }
 
 private:
-    FileSys::StorageId storage;
+    [[maybe_unused]] FileSys::StorageId storage;
 };
 
 class IRegisteredLocationResolver final : public ServiceFramework<IRegisteredLocationResolver> {
 public:
-    explicit IRegisteredLocationResolver() : ServiceFramework{"IRegisteredLocationResolver"} {
+    explicit IRegisteredLocationResolver(Core::System& system_)
+        : ServiceFramework{system_, "IRegisteredLocationResolver"} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, nullptr, "ResolveProgramPath"},
@@ -61,7 +61,8 @@ public:
             {5, nullptr, "RegisterHtmlDocumentPath"},
             {6, nullptr, "UnregisterHtmlDocumentPath"},
             {7, nullptr, "RedirectHtmlDocumentPath"},
-            {8, nullptr, ""},
+            {8, nullptr, "Refresh"},
+            {9, nullptr, "RefreshExcluding"},
         };
         // clang-format on
 
@@ -71,12 +72,15 @@ public:
 
 class IAddOnContentLocationResolver final : public ServiceFramework<IAddOnContentLocationResolver> {
 public:
-    explicit IAddOnContentLocationResolver() : ServiceFramework{"IAddOnContentLocationResolver"} {
+    explicit IAddOnContentLocationResolver(Core::System& system_)
+        : ServiceFramework{system_, "IAddOnContentLocationResolver"} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, nullptr, "ResolveAddOnContentPath"},
             {1, nullptr, "RegisterAddOnContentStorage"},
             {2, nullptr, "UnregisterAllAddOnContentPath"},
+            {3, nullptr, "RefreshApplicationAddOnContent"},
+            {4, nullptr, "UnregisterApplicationAddOnContent"},
         };
         // clang-format on
 
@@ -86,7 +90,7 @@ public:
 
 class LR final : public ServiceFramework<LR> {
 public:
-    explicit LR() : ServiceFramework{"lr"} {
+    explicit LR(Core::System& system_) : ServiceFramework{system_, "lr"} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, nullptr, "OpenLocationResolver"},
@@ -102,7 +106,7 @@ public:
 
 class NCM final : public ServiceFramework<NCM> {
 public:
-    explicit NCM() : ServiceFramework{"ncm"} {
+    explicit NCM(Core::System& system_) : ServiceFramework{system_, "ncm"} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, nullptr, "CreateContentStorage"},
@@ -118,6 +122,9 @@ public:
             {10, nullptr, "InactivateContentStorage"},
             {11, nullptr, "ActivateContentMetaDatabase"},
             {12, nullptr, "InactivateContentMetaDatabase"},
+            {13, nullptr, "InvalidateRightsIdCache"},
+            {14, nullptr, "GetMemoryReport"},
+            {15, nullptr, "ActivateFsContentStorage"},
         };
         // clang-format on
 
@@ -125,9 +132,12 @@ public:
     }
 };
 
-void InstallInterfaces(SM::ServiceManager& sm) {
-    std::make_shared<LR>()->InstallAsService(sm);
-    std::make_shared<NCM>()->InstallAsService(sm);
+void LoopProcess(Core::System& system) {
+    auto server_manager = std::make_unique<ServerManager>(system);
+
+    server_manager->RegisterNamedService("lr", std::make_shared<LR>(system));
+    server_manager->RegisterNamedService("ncm", std::make_shared<NCM>(system));
+    ServerManager::RunServer(std::move(server_manager));
 }
 
 } // namespace Service::NCM

@@ -1,178 +1,383 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2021 yuzu Emulator Project
+// SPDX-FileCopyrightText: 2021 Skyline Team and Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <bit>
 #include <cstdlib>
 #include <cstring>
 
+#include <fmt/format.h>
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "common/scope_exit.h"
 #include "core/core.h"
-#include "core/hle/kernel/readable_event.h"
-#include "core/hle/kernel/writable_event.h"
+#include "core/hle/kernel/k_event.h"
+#include "core/hle/service/nvdrv/core/container.h"
+#include "core/hle/service/nvdrv/core/syncpoint_manager.h"
+#include "core/hle/service/nvdrv/devices/ioctl_serialization.h"
 #include "core/hle/service/nvdrv/devices/nvhost_ctrl.h"
 #include "video_core/gpu.h"
+#include "video_core/host1x/host1x.h"
 
 namespace Service::Nvidia::Devices {
 
-nvhost_ctrl::nvhost_ctrl(Core::System& system, EventInterface& events_interface)
-    : nvdevice(system), events_interface{events_interface} {}
-nvhost_ctrl::~nvhost_ctrl() = default;
+nvhost_ctrl::nvhost_ctrl(Core::System& system_, EventInterface& events_interface_,
+                         NvCore::Container& core_)
+    : nvdevice{system_}, events_interface{events_interface_}, core{core_},
+      syncpoint_manager{core_.GetSyncpointManager()} {}
 
-u32 nvhost_ctrl::ioctl(Ioctl command, const std::vector<u8>& input, const std::vector<u8>& input2,
-                       std::vector<u8>& output, std::vector<u8>& output2, IoctlCtrl& ctrl,
-                       IoctlVersion version) {
-    LOG_DEBUG(Service_NVDRV, "called, command=0x{:08X}, input_size=0x{:X}, output_size=0x{:X}",
-              command.raw, input.size(), output.size());
-
-    switch (static_cast<IoctlCommand>(command.raw)) {
-    case IoctlCommand::IocGetConfigCommand:
-        return NvOsGetConfigU32(input, output);
-    case IoctlCommand::IocCtrlEventWaitCommand:
-        return IocCtrlEventWait(input, output, false, ctrl);
-    case IoctlCommand::IocCtrlEventWaitAsyncCommand:
-        return IocCtrlEventWait(input, output, true, ctrl);
-    case IoctlCommand::IocCtrlEventRegisterCommand:
-        return IocCtrlEventRegister(input, output);
-    case IoctlCommand::IocCtrlEventUnregisterCommand:
-        return IocCtrlEventUnregister(input, output);
-    case IoctlCommand::IocCtrlEventSignalCommand:
-        return IocCtrlEventSignal(input, output);
-    default:
-        UNIMPLEMENTED_MSG("Unimplemented ioctl");
-        return 0;
+nvhost_ctrl::~nvhost_ctrl() {
+    for (auto& event : events) {
+        if (!event.registered) {
+            continue;
+        }
+        events_interface.FreeEvent(event.kevent);
     }
 }
 
-u32 nvhost_ctrl::NvOsGetConfigU32(const std::vector<u8>& input, std::vector<u8>& output) {
-    IocGetConfigParams params{};
-    std::memcpy(&params, input.data(), sizeof(params));
+NvResult nvhost_ctrl::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+                             std::span<u8> output) {
+    switch (command.group) {
+    case 0x0:
+        switch (command.cmd) {
+        case 0x1b:
+            return WrapFixed(this, &nvhost_ctrl::NvOsGetConfigU32, input, output);
+        case 0x1c:
+            return WrapFixed(this, &nvhost_ctrl::IocCtrlClearEventWait, input, output);
+        case 0x1d:
+            return WrapFixed(this, &nvhost_ctrl::IocCtrlEventWait, input, output, true);
+        case 0x1e:
+            return WrapFixed(this, &nvhost_ctrl::IocCtrlEventWait, input, output, false);
+        case 0x1f:
+            return WrapFixed(this, &nvhost_ctrl::IocCtrlEventRegister, input, output);
+        case 0x20:
+            return WrapFixed(this, &nvhost_ctrl::IocCtrlEventUnregister, input, output);
+        case 0x21:
+            return WrapFixed(this, &nvhost_ctrl::IocCtrlEventUnregisterBatch, input, output);
+        }
+        break;
+    default:
+        break;
+    }
+
+    UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+    return NvResult::NotImplemented;
+}
+
+NvResult nvhost_ctrl::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+                             std::span<const u8> inline_input, std::span<u8> output) {
+    UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+    return NvResult::NotImplemented;
+}
+
+NvResult nvhost_ctrl::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+                             std::span<u8> output, std::span<u8> inline_outpu) {
+    UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+    return NvResult::NotImplemented;
+}
+
+void nvhost_ctrl::OnOpen(NvCore::SessionId session_id, DeviceFD fd) {}
+
+void nvhost_ctrl::OnClose(DeviceFD fd) {}
+
+NvResult nvhost_ctrl::NvOsGetConfigU32(IocGetConfigParams& params) {
     LOG_TRACE(Service_NVDRV, "called, setting={}!{}", params.domain_str.data(),
               params.param_str.data());
-    return 0x30006; // Returns error on production mode
+    return NvResult::ConfigVarNotFound; // Returns error on production mode
 }
 
-u32 nvhost_ctrl::IocCtrlEventWait(const std::vector<u8>& input, std::vector<u8>& output,
-                                  bool is_async, IoctlCtrl& ctrl) {
-    IocCtrlEventWaitParams params{};
-    std::memcpy(&params, input.data(), sizeof(params));
-    LOG_DEBUG(Service_NVDRV, "syncpt_id={}, threshold={}, timeout={}, is_async={}",
-              params.syncpt_id, params.threshold, params.timeout, is_async);
+NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_allocation) {
+    LOG_DEBUG(Service_NVDRV, "syncpt_id={}, threshold={}, timeout={}, is_allocation={}",
+              params.fence.id, params.fence.value, params.timeout, is_allocation);
 
-    if (params.syncpt_id >= MaxSyncPoints) {
+    bool must_unmark_fail = !is_allocation;
+    const u32 event_id = params.value.raw;
+    SCOPE_EXIT {
+        if (must_unmark_fail) {
+            events[event_id].fails = 0;
+        }
+    };
+
+    const u32 fence_id = static_cast<u32>(params.fence.id);
+
+    if (fence_id >= MaxSyncPoints) {
         return NvResult::BadParameter;
     }
 
-    u32 event_id = params.value & 0x00FF;
+    if (params.fence.value == 0) {
+        if (!syncpoint_manager.IsSyncpointAllocated(params.fence.id)) {
+            LOG_WARNING(Service_NVDRV,
+                        "Unallocated syncpt_id={}, threshold={}, timeout={}, is_allocation={}",
+                        params.fence.id, params.fence.value, params.timeout, is_allocation);
+        } else {
+            params.value.raw = syncpoint_manager.ReadSyncpointMinValue(fence_id);
+        }
+        return NvResult::Success;
+    }
 
-    if (event_id >= MaxNvEvents) {
-        std::memcpy(output.data(), &params, sizeof(params));
+    if (syncpoint_manager.IsFenceSignalled(params.fence)) {
+        params.value.raw = syncpoint_manager.ReadSyncpointMinValue(fence_id);
+        return NvResult::Success;
+    }
+
+    if (const auto new_value = syncpoint_manager.UpdateMin(fence_id);
+        syncpoint_manager.IsFenceSignalled(params.fence)) {
+        params.value.raw = new_value;
+        return NvResult::Success;
+    }
+
+    auto& host1x_syncpoint_manager = system.Host1x().GetSyncpointManager();
+    const u32 target_value = params.fence.value;
+
+    auto lock = NvEventsLock();
+
+    u32 slot = [&]() {
+        if (is_allocation) {
+            params.value.raw = 0;
+            return FindFreeNvEvent(fence_id);
+        } else {
+            return params.value.raw;
+        }
+    }();
+
+    must_unmark_fail = false;
+
+    const auto check_failing = [&]() {
+        if (events[slot].fails > 2) {
+            {
+                auto lk = system.StallApplication();
+                host1x_syncpoint_manager.WaitHost(fence_id, target_value);
+                system.UnstallApplication();
+            }
+            params.value.raw = target_value;
+            return true;
+        }
+        return false;
+    };
+
+    if (slot >= MaxNvEvents) {
         return NvResult::BadParameter;
-    }
-
-    auto event = events_interface.events[event_id];
-    auto& gpu = system.GPU();
-    // This is mostly to take into account unimplemented features. As synced
-    // gpu is always synced.
-    if (!gpu.IsAsync()) {
-        event.writable->Signal();
-        return NvResult::Success;
-    }
-    auto lock = gpu.LockSync();
-    const u32 current_syncpoint_value = gpu.GetSyncpointValue(params.syncpt_id);
-    const s32 diff = current_syncpoint_value - params.threshold;
-    if (diff >= 0) {
-        event.writable->Signal();
-        params.value = current_syncpoint_value;
-        std::memcpy(output.data(), &params, sizeof(params));
-        return NvResult::Success;
-    }
-    const u32 target_value = current_syncpoint_value - diff;
-
-    if (!is_async) {
-        params.value = 0;
     }
 
     if (params.timeout == 0) {
-        std::memcpy(output.data(), &params, sizeof(params));
+        if (check_failing()) {
+            events[slot].fails = 0;
+            return NvResult::Success;
+        }
         return NvResult::Timeout;
     }
 
-    EventState status = events_interface.status[event_id];
-    if (event_id < MaxNvEvents || status == EventState::Free || status == EventState::Registered) {
-        events_interface.SetEventStatus(event_id, EventState::Waiting);
-        events_interface.assigned_syncpt[event_id] = params.syncpt_id;
-        events_interface.assigned_value[event_id] = target_value;
-        if (is_async) {
-            params.value = params.syncpt_id << 4;
-        } else {
-            params.value = ((params.syncpt_id & 0xfff) << 16) | 0x10000000;
-        }
-        params.value |= event_id;
-        event.writable->Clear();
-        gpu.RegisterSyncptInterrupt(params.syncpt_id, target_value);
-        if (!is_async && ctrl.fresh_call) {
-            ctrl.must_delay = true;
-            ctrl.timeout = params.timeout;
-            ctrl.event_id = event_id;
-            return NvResult::Timeout;
-        }
-        std::memcpy(output.data(), &params, sizeof(params));
-        return NvResult::Timeout;
+    auto& event = events[slot];
+
+    if (!event.registered) {
+        return NvResult::BadParameter;
     }
-    std::memcpy(output.data(), &params, sizeof(params));
-    return NvResult::BadParameter;
+
+    if (event.IsBeingUsed()) {
+        return NvResult::BadParameter;
+    }
+
+    if (check_failing()) {
+        event.fails = 0;
+        return NvResult::Success;
+    }
+
+    params.value.raw = 0;
+
+    event.status.store(EventState::Waiting, std::memory_order_release);
+    event.assigned_syncpt = fence_id;
+    event.assigned_value = target_value;
+    if (is_allocation) {
+        params.value.syncpoint_id_for_allocation.Assign(static_cast<u16>(fence_id));
+        params.value.event_allocated.Assign(1);
+    } else {
+        params.value.syncpoint_id.Assign(fence_id);
+    }
+    params.value.raw |= slot;
+
+    event.wait_handle =
+        host1x_syncpoint_manager.RegisterHostAction(fence_id, target_value, [this, slot]() {
+            auto& event_ = events[slot];
+            if (event_.status.exchange(EventState::Signalling, std::memory_order_acq_rel) ==
+                EventState::Waiting) {
+                event_.kevent->Signal();
+            }
+            event_.status.store(EventState::Signalled, std::memory_order_release);
+        });
+    return NvResult::Timeout;
 }
 
-u32 nvhost_ctrl::IocCtrlEventRegister(const std::vector<u8>& input, std::vector<u8>& output) {
-    IocCtrlEventRegisterParams params{};
-    std::memcpy(&params, input.data(), sizeof(params));
-    const u32 event_id = params.user_event_id & 0x00FF;
+NvResult nvhost_ctrl::FreeEvent(u32 slot) {
+    if (slot >= MaxNvEvents) {
+        return NvResult::BadParameter;
+    }
+
+    auto& event = events[slot];
+
+    if (!event.registered) {
+        return NvResult::Success;
+    }
+
+    if (event.IsBeingUsed()) {
+        return NvResult::Busy;
+    }
+
+    FreeNvEvent(slot);
+    return NvResult::Success;
+}
+
+NvResult nvhost_ctrl::IocCtrlEventRegister(IocCtrlEventRegisterParams& params) {
+    const u32 event_id = params.user_event_id;
     LOG_DEBUG(Service_NVDRV, " called, user_event_id: {:X}", event_id);
     if (event_id >= MaxNvEvents) {
         return NvResult::BadParameter;
     }
-    if (events_interface.registered[event_id]) {
-        return NvResult::BadParameter;
+
+    auto lock = NvEventsLock();
+
+    if (events[event_id].registered) {
+        const auto result = FreeEvent(event_id);
+        if (result != NvResult::Success) {
+            return result;
+        }
     }
-    events_interface.RegisterEvent(event_id);
+    CreateNvEvent(event_id);
     return NvResult::Success;
 }
 
-u32 nvhost_ctrl::IocCtrlEventUnregister(const std::vector<u8>& input, std::vector<u8>& output) {
-    IocCtrlEventUnregisterParams params{};
-    std::memcpy(&params, input.data(), sizeof(params));
+NvResult nvhost_ctrl::IocCtrlEventUnregister(IocCtrlEventUnregisterParams& params) {
     const u32 event_id = params.user_event_id & 0x00FF;
     LOG_DEBUG(Service_NVDRV, " called, user_event_id: {:X}", event_id);
-    if (event_id >= MaxNvEvents) {
-        return NvResult::BadParameter;
-    }
-    if (!events_interface.registered[event_id]) {
-        return NvResult::BadParameter;
-    }
-    events_interface.UnregisterEvent(event_id);
-    return NvResult::Success;
+
+    auto lock = NvEventsLock();
+    return FreeEvent(event_id);
 }
 
-u32 nvhost_ctrl::IocCtrlEventSignal(const std::vector<u8>& input, std::vector<u8>& output) {
-    IocCtrlEventSignalParams params{};
-    std::memcpy(&params, input.data(), sizeof(params));
-    // TODO(Blinkhawk): This is normally called when an NvEvents timeout on WaitSynchronization
-    // It is believed from RE to cancel the GPU Event. However, better research is required
-    u32 event_id = params.user_event_id & 0x00FF;
-    LOG_WARNING(Service_NVDRV, "(STUBBED) called, user_event_id: {:X}", event_id);
-    if (event_id >= MaxNvEvents) {
-        return NvResult::BadParameter;
-    }
-    if (events_interface.status[event_id] == EventState::Waiting) {
-        auto& gpu = system.GPU();
-        if (gpu.CancelSyncptInterrupt(events_interface.assigned_syncpt[event_id],
-                                      events_interface.assigned_value[event_id])) {
-            events_interface.LiberateEvent(event_id);
-            events_interface.events[event_id].writable->Signal();
+NvResult nvhost_ctrl::IocCtrlEventUnregisterBatch(IocCtrlEventUnregisterBatchParams& params) {
+    u64 event_mask = params.user_events;
+    LOG_DEBUG(Service_NVDRV, " called, event_mask: {:X}", event_mask);
+
+    auto lock = NvEventsLock();
+    while (event_mask != 0) {
+        const u64 event_id = std::countr_zero(event_mask);
+        event_mask &= ~(1ULL << event_id);
+        const auto result = FreeEvent(static_cast<u32>(event_id));
+        if (result != NvResult::Success) {
+            return result;
         }
     }
     return NvResult::Success;
+}
+
+NvResult nvhost_ctrl::IocCtrlClearEventWait(IocCtrlEventClearParams& params) {
+    u32 event_id = params.event_id.slot;
+    LOG_DEBUG(Service_NVDRV, "called, event_id: {:X}", event_id);
+
+    if (event_id >= MaxNvEvents) {
+        return NvResult::BadParameter;
+    }
+
+    auto lock = NvEventsLock();
+
+    auto& event = events[event_id];
+    if (event.status.exchange(EventState::Cancelling, std::memory_order_acq_rel) ==
+        EventState::Waiting) {
+        auto& host1x_syncpoint_manager = system.Host1x().GetSyncpointManager();
+        host1x_syncpoint_manager.DeregisterHostAction(event.assigned_syncpt, event.wait_handle);
+        syncpoint_manager.UpdateMin(event.assigned_syncpt);
+        event.wait_handle = {};
+    }
+    event.fails++;
+    event.status.store(EventState::Cancelled, std::memory_order_release);
+    event.kevent->Clear();
+
+    return NvResult::Success;
+}
+
+Kernel::KEvent* nvhost_ctrl::QueryEvent(u32 event_id) {
+    const auto desired_event = SyncpointEventValue{.raw = event_id};
+
+    const bool allocated = desired_event.event_allocated.Value() != 0;
+    const u32 slot{allocated ? desired_event.partial_slot.Value()
+                             : static_cast<u32>(desired_event.slot)};
+    if (slot >= MaxNvEvents) {
+        ASSERT(false);
+        return nullptr;
+    }
+
+    const u32 syncpoint_id{allocated ? desired_event.syncpoint_id_for_allocation.Value()
+                                     : desired_event.syncpoint_id.Value()};
+
+    auto lock = NvEventsLock();
+
+    auto& event = events[slot];
+    if (event.registered && event.assigned_syncpt == syncpoint_id) {
+        ASSERT(event.kevent);
+        return event.kevent;
+    }
+    // Is this possible in hardware?
+    ASSERT_MSG(false, "Slot:{}, SyncpointID:{}, requested", slot, syncpoint_id);
+    return nullptr;
+}
+
+std::unique_lock<std::mutex> nvhost_ctrl::NvEventsLock() {
+    return std::unique_lock<std::mutex>(events_mutex);
+}
+
+void nvhost_ctrl::CreateNvEvent(u32 event_id) {
+    auto& event = events[event_id];
+    ASSERT(!event.kevent);
+    ASSERT(!event.registered);
+    ASSERT(!event.IsBeingUsed());
+    event.kevent = events_interface.CreateEvent(fmt::format("NVCTRL::NvEvent_{}", event_id));
+    event.status = EventState::Available;
+    event.registered = true;
+    const u64 mask = 1ULL << event_id;
+    event.fails = 0;
+    events_mask |= mask;
+    event.assigned_syncpt = 0;
+}
+
+void nvhost_ctrl::FreeNvEvent(u32 event_id) {
+    auto& event = events[event_id];
+    ASSERT(event.kevent);
+    ASSERT(event.registered);
+    ASSERT(!event.IsBeingUsed());
+    events_interface.FreeEvent(event.kevent);
+    event.kevent = nullptr;
+    event.status = EventState::Available;
+    event.registered = false;
+    const u64 mask = ~(1ULL << event_id);
+    events_mask &= mask;
+}
+
+u32 nvhost_ctrl::FindFreeNvEvent(u32 syncpoint_id) {
+    u32 slot{MaxNvEvents};
+    u32 free_slot{MaxNvEvents};
+    for (u32 i = 0; i < MaxNvEvents; i++) {
+        auto& event = events[i];
+        if (event.registered) {
+            if (!event.IsBeingUsed()) {
+                slot = i;
+                if (event.assigned_syncpt == syncpoint_id) {
+                    return slot;
+                }
+            }
+        } else if (free_slot == MaxNvEvents) {
+            free_slot = i;
+        }
+    }
+    if (free_slot < MaxNvEvents) {
+        CreateNvEvent(free_slot);
+        return free_slot;
+    }
+
+    if (slot < MaxNvEvents) {
+        return slot;
+    }
+
+    LOG_CRITICAL(Service_NVDRV, "Failed to allocate an event");
+    return 0;
 }
 
 } // namespace Service::Nvidia::Devices

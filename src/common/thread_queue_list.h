@@ -1,6 +1,6 @@
-// Copyright 2014 Citra Emulator Project / PPSSPP Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2012 PPSSPP Project
+// SPDX-FileCopyrightText: 2014 Dolphin Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
@@ -18,14 +18,14 @@ struct ThreadQueueList {
     using Priority = unsigned int;
 
     // Number of priority levels. (Valid levels are [0..NUM_QUEUES).)
-    static const Priority NUM_QUEUES = N;
+    static constexpr Priority NUM_QUEUES = N;
 
     ThreadQueueList() {
         first = nullptr;
     }
 
     // Only for debugging, returns priority level.
-    Priority contains(const T& uid) const {
+    [[nodiscard]] Priority contains(const T& uid) const {
         for (Priority i = 0; i < NUM_QUEUES; ++i) {
             const Queue& cur = queues[i];
             if (std::find(cur.data.cbegin(), cur.data.cend(), uid) != cur.data.cend()) {
@@ -36,7 +36,7 @@ struct ThreadQueueList {
         return -1;
     }
 
-    T get_first() const {
+    [[nodiscard]] T get_first() const {
         const Queue* cur = first;
         while (cur != nullptr) {
             if (!cur->data.empty()) {
@@ -49,7 +49,7 @@ struct ThreadQueueList {
     }
 
     template <typename UnaryPredicate>
-    T get_first_filter(UnaryPredicate filter) const {
+    [[nodiscard]] T get_first_filter(UnaryPredicate filter) const {
         const Queue* cur = first;
         while (cur != nullptr) {
             if (!cur->data.empty()) {
@@ -129,7 +129,7 @@ struct ThreadQueueList {
         first = nullptr;
     }
 
-    bool empty(Priority priority) const {
+    [[nodiscard]] bool empty(Priority priority) const {
         const Queue* cur = &queues[priority];
         return cur->data.empty();
     }

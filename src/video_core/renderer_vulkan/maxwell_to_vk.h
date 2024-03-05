@@ -1,58 +1,78 @@
-// Copyright 2019 yuzu Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
-#include <utility>
-#include "common/common_types.h"
+#include "shader_recompiler/stage.h"
 #include "video_core/engines/maxwell_3d.h"
-#include "video_core/renderer_vulkan/declarations.h"
-#include "video_core/renderer_vulkan/vk_device.h"
 #include "video_core/surface.h"
 #include "video_core/textures/texture.h"
+#include "video_core/vulkan_common/vulkan_device.h"
+#include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Vulkan::MaxwellToVK {
 
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
 using PixelFormat = VideoCore::Surface::PixelFormat;
-using ComponentType = VideoCore::Surface::ComponentType;
 
 namespace Sampler {
 
-vk::Filter Filter(Tegra::Texture::TextureFilter filter);
+VkFilter Filter(Tegra::Texture::TextureFilter filter);
 
-vk::SamplerMipmapMode MipmapMode(Tegra::Texture::TextureMipmapFilter mipmap_filter);
+VkSamplerMipmapMode MipmapMode(Tegra::Texture::TextureMipmapFilter mipmap_filter);
 
-vk::SamplerAddressMode WrapMode(Tegra::Texture::WrapMode wrap_mode);
+VkSamplerAddressMode WrapMode(const Device& device, Tegra::Texture::WrapMode wrap_mode,
+                              Tegra::Texture::TextureFilter filter);
 
-vk::CompareOp DepthCompareFunction(Tegra::Texture::DepthCompareFunc depth_compare_func);
+VkCompareOp DepthCompareFunction(Tegra::Texture::DepthCompareFunc depth_compare_func);
 
 } // namespace Sampler
 
-std::pair<vk::Format, bool> SurfaceFormat(const VKDevice& device, FormatType format_type,
-                                          PixelFormat pixel_format, ComponentType component_type);
+struct FormatInfo {
+    VkFormat format;
+    bool attachable;
+    bool storage;
+};
 
-vk::ShaderStageFlagBits ShaderStage(Maxwell::ShaderStage stage);
+/**
+ * Returns format properties supported in the host
+ * @param device       Host device
+ * @param format_type  Type of image the buffer will use
+ * @param with_srgb    True when the format can be sRGB when converted to another format (ASTC)
+ * @param pixel_format Guest pixel format to describe
+ */
+[[nodiscard]] FormatInfo SurfaceFormat(const Device& device, FormatType format_type, bool with_srgb,
+                                       PixelFormat pixel_format);
 
-vk::PrimitiveTopology PrimitiveTopology(Maxwell::PrimitiveTopology topology);
+VkShaderStageFlagBits ShaderStage(Shader::Stage stage);
 
-vk::Format VertexFormat(Maxwell::VertexAttribute::Type type, Maxwell::VertexAttribute::Size size);
+VkPrimitiveTopology PrimitiveTopology(const Device& device, Maxwell::PrimitiveTopology topology);
 
-vk::CompareOp ComparisonOp(Maxwell::ComparisonOp comparison);
+VkFormat VertexFormat(const Device& device, Maxwell::VertexAttribute::Type type,
+                      Maxwell::VertexAttribute::Size size);
 
-vk::IndexType IndexFormat(Maxwell::IndexFormat index_format);
+VkCompareOp ComparisonOp(Maxwell::ComparisonOp comparison);
 
-vk::StencilOp StencilOp(Maxwell::StencilOp stencil_op);
+VkIndexType IndexFormat(Maxwell::IndexFormat index_format);
 
-vk::BlendOp BlendEquation(Maxwell::Blend::Equation equation);
+VkStencilOp StencilOp(Maxwell::StencilOp::Op stencil_op);
 
-vk::BlendFactor BlendFactor(Maxwell::Blend::Factor factor);
+VkBlendOp BlendEquation(Maxwell::Blend::Equation equation);
 
-vk::FrontFace FrontFace(Maxwell::Cull::FrontFace front_face);
+VkBlendFactor BlendFactor(Maxwell::Blend::Factor factor);
 
-vk::CullModeFlags CullFace(Maxwell::Cull::CullFace cull_face);
+VkFrontFace FrontFace(Maxwell::FrontFace front_face);
 
-vk::ComponentSwizzle SwizzleSource(Tegra::Texture::SwizzleSource swizzle);
+VkCullModeFlagBits CullFace(Maxwell::CullFace cull_face);
+
+VkPolygonMode PolygonMode(Maxwell::PolygonMode polygon_mode);
+
+VkComponentSwizzle SwizzleSource(Tegra::Texture::SwizzleSource swizzle);
+
+VkViewportCoordinateSwizzleNV ViewportSwizzle(Maxwell::ViewportSwizzle swizzle);
+
+VkSamplerReductionMode SamplerReduction(Tegra::Texture::SamplerReduction reduction);
+
+VkSampleCountFlagBits MsaaMode(Tegra::Texture::MsaaMode msaa_mode);
 
 } // namespace Vulkan::MaxwellToVK

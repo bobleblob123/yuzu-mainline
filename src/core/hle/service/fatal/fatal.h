@@ -1,6 +1,5 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
@@ -16,19 +15,19 @@ class Module final {
 public:
     class Interface : public ServiceFramework<Interface> {
     public:
-        explicit Interface(std::shared_ptr<Module> module, Core::System& system, const char* name);
+        explicit Interface(std::shared_ptr<Module> module_, Core::System& system_,
+                           const char* name);
         ~Interface() override;
 
-        void ThrowFatal(Kernel::HLERequestContext& ctx);
-        void ThrowFatalWithPolicy(Kernel::HLERequestContext& ctx);
-        void ThrowFatalWithCpuContext(Kernel::HLERequestContext& ctx);
+        void ThrowFatal(HLERequestContext& ctx);
+        void ThrowFatalWithPolicy(HLERequestContext& ctx);
+        void ThrowFatalWithCpuContext(HLERequestContext& ctx);
 
     protected:
         std::shared_ptr<Module> module;
-        Core::System& system;
     };
 };
 
-void InstallInterfaces(SM::ServiceManager& service_manager, Core::System& system);
+void LoopProcess(Core::System& system);
 
 } // namespace Service::Fatal

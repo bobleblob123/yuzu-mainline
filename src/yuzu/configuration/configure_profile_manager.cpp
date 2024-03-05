@@ -1,22 +1,22 @@
-// Copyright 2016 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2016 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <functional>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QGraphicsItem>
-#include <QGraphicsScene>
 #include <QHeaderView>
 #include <QMessageBox>
 #include <QStandardItemModel>
 #include <QTreeView>
-#include <QVBoxLayout>
 #include "common/assert.h"
-#include "common/file_util.h"
+#include "common/fs/path_util.h"
+#include "common/settings.h"
 #include "common/string_util.h"
 #include "core/core.h"
 #include "core/hle/service/acc/profile_manager.h"
-#include "core/settings.h"
 #include "ui_configure_profile_manager.h"
 #include "yuzu/configuration/configure_profile_manager.h"
 #include "yuzu/util/limitable_input_dialog.h"
@@ -33,14 +33,15 @@ constexpr std::array<u8, 107> backup_jpeg{
     0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0xd2, 0xcf, 0x20, 0xff, 0xd9,
 };
 
-QString GetImagePath(Common::UUID uuid) {
-    const auto path = FileUtil::GetUserPath(FileUtil::UserPath::NANDDir) +
-                      "/system/save/8000000000000010/su/avators/" + uuid.FormatSwitch() + ".jpg";
-    return QString::fromStdString(path);
+QString GetImagePath(const Common::UUID& uuid) {
+    const auto path =
+        Common::FS::GetYuzuPath(Common::FS::YuzuPath::NANDDir) /
+        fmt::format("system/save/8000000000000010/su/avators/{}.jpg", uuid.FormattedString());
+    return QString::fromStdString(Common::FS::PathToUTF8String(path));
 }
 
 QString GetAccountUsername(const Service::Account::ProfileManager& manager, Common::UUID uuid) {
-    Service::Account::ProfileBase profile;
+    Service::Account::ProfileBase profile{};
     if (!manager.GetProfileBase(uuid, profile)) {
         return {};
     }
@@ -54,10 +55,10 @@ QString FormatUserEntryText(const QString& username, Common::UUID uuid) {
     return ConfigureProfileManager::tr("%1\n%2",
                                        "%1 is the profile username, %2 is the formatted UUID (e.g. "
                                        "00112233-4455-6677-8899-AABBCCDDEEFF))")
-        .arg(username, QString::fromStdString(uuid.FormatSwitch()));
+        .arg(username, QString::fromStdString(uuid.FormattedString()));
 }
 
-QPixmap GetIcon(Common::UUID uuid) {
+QPixmap GetIcon(const Common::UUID& uuid) {
     QPixmap icon{GetImagePath(uuid)};
 
     if (!icon) {
@@ -75,9 +76,9 @@ QString GetProfileUsernameFromUser(QWidget* parent, const QString& description_t
 }
 } // Anonymous namespace
 
-ConfigureProfileManager ::ConfigureProfileManager(QWidget* parent)
-    : QWidget(parent), ui(new Ui::ConfigureProfileManager),
-      profile_manager(std::make_unique<Service::Account::ProfileManager>()) {
+ConfigureProfileManager::ConfigureProfileManager(Core::System& system_, QWidget* parent)
+    : QWidget(parent), ui{std::make_unique<Ui::ConfigureProfileManager>()},
+      profile_manager{system_.GetProfileManager()}, system{system_} {
     ui->setupUi(this);
 
     tree_view = new QTreeView;
@@ -110,14 +111,17 @@ ConfigureProfileManager ::ConfigureProfileManager(QWidget* parent)
 
     connect(ui->pm_add, &QPushButton::clicked, this, &ConfigureProfileManager::AddUser);
     connect(ui->pm_rename, &QPushButton::clicked, this, &ConfigureProfileManager::RenameUser);
-    connect(ui->pm_remove, &QPushButton::clicked, this, &ConfigureProfileManager::DeleteUser);
+    connect(ui->pm_remove, &QPushButton::clicked, this,
+            &ConfigureProfileManager::ConfirmDeleteUser);
     connect(ui->pm_set_image, &QPushButton::clicked, this, &ConfigureProfileManager::SetUserImage);
+
+    confirm_dialog = new ConfigureProfileManagerDeleteDialog(this);
 
     scene = new QGraphicsScene;
     ui->current_user_icon->setScene(scene);
 
-    SetConfiguration();
     RetranslateUI();
+    SetConfiguration();
 }
 
 ConfigureProfileManager::~ConfigureProfileManager() = default;
@@ -136,7 +140,7 @@ void ConfigureProfileManager::RetranslateUI() {
 }
 
 void ConfigureProfileManager::SetConfiguration() {
-    enabled = !Core::System::GetInstance().IsPoweredOn();
+    enabled = !system.IsPoweredOn();
     item_model->removeRows(0, item_model->rowCount());
     list_items.clear();
 
@@ -145,10 +149,10 @@ void ConfigureProfileManager::SetConfiguration() {
 }
 
 void ConfigureProfileManager::PopulateUserList() {
-    const auto& profiles = profile_manager->GetAllUsers();
+    const auto& profiles = profile_manager.GetAllUsers();
     for (const auto& user : profiles) {
-        Service::Account::ProfileBase profile;
-        if (!profile_manager->GetProfileBase(user, profile))
+        Service::Account::ProfileBase profile{};
+        if (!profile_manager.GetProfileBase(user, profile))
             continue;
 
         const auto username = Common::StringFromFixedZeroTerminatedBuffer(
@@ -163,11 +167,11 @@ void ConfigureProfileManager::PopulateUserList() {
 }
 
 void ConfigureProfileManager::UpdateCurrentUser() {
-    ui->pm_add->setEnabled(profile_manager->GetUserCount() < Service::Account::MAX_USERS);
+    ui->pm_add->setEnabled(profile_manager.GetUserCount() < Service::Account::MAX_USERS);
 
-    const auto& current_user = profile_manager->GetUser(Settings::values.current_user);
+    const auto& current_user = profile_manager.GetUser(Settings::values.current_user.GetValue());
     ASSERT(current_user);
-    const auto username = GetAccountUsername(*profile_manager, *current_user);
+    const auto username = GetAccountUsername(profile_manager, *current_user);
 
     scene->clear();
     scene->addPixmap(
@@ -179,17 +183,15 @@ void ConfigureProfileManager::ApplyConfiguration() {
     if (!enabled) {
         return;
     }
-
-    Settings::Apply();
 }
 
 void ConfigureProfileManager::SelectUser(const QModelIndex& index) {
     Settings::values.current_user =
-        std::clamp<s32>(index.row(), 0, static_cast<s32>(profile_manager->GetUserCount() - 1));
+        std::clamp<s32>(index.row(), 0, static_cast<s32>(profile_manager.GetUserCount() - 1));
 
     UpdateCurrentUser();
 
-    ui->pm_remove->setEnabled(profile_manager->GetUserCount() >= 2);
+    ui->pm_remove->setEnabled(profile_manager.GetUserCount() >= 2);
     ui->pm_rename->setEnabled(true);
     ui->pm_set_image->setEnabled(true);
 }
@@ -201,19 +203,20 @@ void ConfigureProfileManager::AddUser() {
         return;
     }
 
-    const auto uuid = Common::UUID::Generate();
-    profile_manager->CreateNewUser(uuid, username.toStdString());
+    const auto uuid = Common::UUID::MakeRandom();
+    profile_manager.CreateNewUser(uuid, username.toStdString());
+    profile_manager.WriteUserSaveFile();
 
     item_model->appendRow(new QStandardItem{GetIcon(uuid), FormatUserEntryText(username, uuid)});
 }
 
 void ConfigureProfileManager::RenameUser() {
     const auto user = tree_view->currentIndex().row();
-    const auto uuid = profile_manager->GetUser(user);
+    const auto uuid = profile_manager.GetUser(user);
     ASSERT(uuid);
 
-    Service::Account::ProfileBase profile;
-    if (!profile_manager->GetProfileBase(*uuid, profile))
+    Service::Account::ProfileBase profile{};
+    if (!profile_manager.GetProfileBase(*uuid, profile))
         return;
 
     const auto new_username = GetProfileUsernameFromUser(this, tr("Enter a new username:"));
@@ -225,7 +228,8 @@ void ConfigureProfileManager::RenameUser() {
     std::fill(profile.username.begin(), profile.username.end(), '\0');
     std::copy(username_std.begin(), username_std.end(), profile.username.begin());
 
-    profile_manager->SetProfileBase(*uuid, profile);
+    profile_manager.SetProfileBase(*uuid, profile);
+    profile_manager.WriteUserSaveFile();
 
     item_model->setItem(
         user, 0,
@@ -234,25 +238,27 @@ void ConfigureProfileManager::RenameUser() {
     UpdateCurrentUser();
 }
 
-void ConfigureProfileManager::DeleteUser() {
+void ConfigureProfileManager::ConfirmDeleteUser() {
     const auto index = tree_view->currentIndex().row();
-    const auto uuid = profile_manager->GetUser(index);
+    const auto uuid = profile_manager.GetUser(index);
     ASSERT(uuid);
-    const auto username = GetAccountUsername(*profile_manager, *uuid);
+    const auto username = GetAccountUsername(profile_manager, *uuid);
 
-    const auto confirm = QMessageBox::question(
-        this, tr("Confirm Delete"),
-        tr("You are about to delete user with name \"%1\". Are you sure?").arg(username));
+    confirm_dialog->SetInfo(username, *uuid, [this, uuid]() { DeleteUser(*uuid); });
+    confirm_dialog->show();
+}
 
-    if (confirm == QMessageBox::No)
-        return;
-
-    if (Settings::values.current_user == tree_view->currentIndex().row())
+void ConfigureProfileManager::DeleteUser(const Common::UUID& uuid) {
+    if (Settings::values.current_user.GetValue() == tree_view->currentIndex().row()) {
         Settings::values.current_user = 0;
+    }
     UpdateCurrentUser();
 
-    if (!profile_manager->RemoveUser(*uuid))
+    if (!profile_manager.RemoveUser(uuid)) {
         return;
+    }
+
+    profile_manager.WriteUserSaveFile();
 
     item_model->removeRows(tree_view->currentIndex().row(), 1);
     tree_view->clearSelection();
@@ -263,7 +269,7 @@ void ConfigureProfileManager::DeleteUser() {
 
 void ConfigureProfileManager::SetUserImage() {
     const auto index = tree_view->currentIndex().row();
-    const auto uuid = profile_manager->GetUser(index);
+    const auto uuid = profile_manager.GetUser(index);
     ASSERT(uuid);
 
     const auto file = QFileDialog::getOpenFileName(this, tr("Select User Image"), QString(),
@@ -281,8 +287,8 @@ void ConfigureProfileManager::SetUserImage() {
         return;
     }
 
-    const auto raw_path = QString::fromStdString(
-        FileUtil::GetUserPath(FileUtil::UserPath::NANDDir) + "/system/save/8000000000000010");
+    const auto raw_path = QString::fromStdString(Common::FS::PathToUTF8String(
+        Common::FS::GetYuzuPath(Common::FS::YuzuPath::NANDDir) / "system/save/8000000000000010"));
     const QFileInfo raw_info{raw_path};
     if (raw_info.exists() && !raw_info.isDir() && !QFile::remove(raw_path)) {
         QMessageBox::warning(this, tr("Error deleting file"),
@@ -304,8 +310,63 @@ void ConfigureProfileManager::SetUserImage() {
         return;
     }
 
-    const auto username = GetAccountUsername(*profile_manager, *uuid);
+    // Profile image must be 256x256
+    QImage image(image_path);
+    if (image.width() != 256 || image.height() != 256) {
+        image = image.scaled(256, 256, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+        if (!image.save(image_path)) {
+            QMessageBox::warning(this, tr("Error resizing user image"),
+                                 tr("Unable to resize image"));
+            return;
+        }
+    }
+
+    const auto username = GetAccountUsername(profile_manager, *uuid);
     item_model->setItem(index, 0,
                         new QStandardItem{GetIcon(*uuid), FormatUserEntryText(username, *uuid)});
     UpdateCurrentUser();
+}
+
+ConfigureProfileManagerDeleteDialog::ConfigureProfileManagerDeleteDialog(QWidget* parent)
+    : QDialog{parent} {
+    auto dialog_vbox_layout = new QVBoxLayout(this);
+    dialog_button_box =
+        new QDialogButtonBox(QDialogButtonBox::Yes | QDialogButtonBox::No, Qt::Horizontal, parent);
+    auto label_message =
+        new QLabel(tr("Delete this user? All of the user's save data will be deleted."), this);
+    label_info = new QLabel(this);
+    auto dialog_hbox_layout_widget = new QWidget(this);
+    auto dialog_hbox_layout = new QHBoxLayout(dialog_hbox_layout_widget);
+    icon_scene = new QGraphicsScene(0, 0, 64, 64, this);
+    auto icon_view = new QGraphicsView(icon_scene, this);
+
+    dialog_hbox_layout_widget->setLayout(dialog_hbox_layout);
+    icon_view->setMaximumSize(64, 64);
+    icon_view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    icon_view->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    this->setLayout(dialog_vbox_layout);
+    this->setWindowTitle(tr("Confirm Delete"));
+    this->setSizeGripEnabled(false);
+    dialog_vbox_layout->addWidget(label_message);
+    dialog_vbox_layout->addWidget(dialog_hbox_layout_widget);
+    dialog_vbox_layout->addWidget(dialog_button_box);
+    dialog_hbox_layout->addWidget(icon_view);
+    dialog_hbox_layout->addWidget(label_info);
+
+    connect(dialog_button_box, &QDialogButtonBox::rejected, this, [this]() { close(); });
+}
+
+ConfigureProfileManagerDeleteDialog::~ConfigureProfileManagerDeleteDialog() = default;
+
+void ConfigureProfileManagerDeleteDialog::SetInfo(const QString& username, const Common::UUID& uuid,
+                                                  std::function<void()> accept_callback) {
+    label_info->setText(
+        tr("Name: %1\nUUID: %2").arg(username, QString::fromStdString(uuid.FormattedString())));
+    icon_scene->clear();
+    icon_scene->addPixmap(GetIcon(uuid));
+
+    connect(dialog_button_box, &QDialogButtonBox::accepted, this, [this, accept_callback]() {
+        close();
+        accept_callback();
+    });
 }

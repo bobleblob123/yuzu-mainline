@@ -1,10 +1,9 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
-#include "core/hle/service/bcat/module.h"
+#include "core/hle/service/service.h"
 
 namespace Core {
 class System;
@@ -12,11 +11,6 @@ class System;
 
 namespace Service::BCAT {
 
-class BCAT final : public Module::Interface {
-public:
-    explicit BCAT(Core::System& system, std::shared_ptr<Module> module,
-                  FileSystem::FileSystemController& fsc, const char* name);
-    ~BCAT() override;
-};
+void LoopProcess(Core::System& system);
 
 } // namespace Service::BCAT

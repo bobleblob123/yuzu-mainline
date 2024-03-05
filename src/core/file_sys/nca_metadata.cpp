@@ -1,12 +1,12 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cstring>
 #include "common/common_types.h"
 #include "common/logging/log.h"
 #include "common/swap.h"
 #include "core/file_sys/nca_metadata.h"
+#include "core/file_sys/vfs/vfs.h"
 
 namespace FileSys {
 
@@ -38,12 +38,16 @@ CNMT::CNMT(VirtualFile file) {
     }
 }
 
-CNMT::CNMT(CNMTHeader header, OptionalHeader opt_header, std::vector<ContentRecord> content_records,
-           std::vector<MetaRecord> meta_records)
-    : header(std::move(header)), opt_header(std::move(opt_header)),
-      content_records(std::move(content_records)), meta_records(std::move(meta_records)) {}
+CNMT::CNMT(CNMTHeader header_, OptionalHeader opt_header_,
+           std::vector<ContentRecord> content_records_, std::vector<MetaRecord> meta_records_)
+    : header(std::move(header_)), opt_header(std::move(opt_header_)),
+      content_records(std::move(content_records_)), meta_records(std::move(meta_records_)) {}
 
 CNMT::~CNMT() = default;
+
+const CNMTHeader& CNMT::GetHeader() const {
+    return header;
+}
 
 u64 CNMT::GetTitleID() const {
     return header.title_id;
@@ -107,7 +111,7 @@ std::vector<u8> CNMT::Serialize() const {
         memcpy(out.data() + sizeof(CNMTHeader), &opt_header, sizeof(OptionalHeader));
     }
 
-    auto offset = header.table_offset;
+    u64_le offset = header.table_offset;
 
     for (const auto& rec : content_records) {
         memcpy(out.data() + offset + sizeof(CNMTHeader), &rec, sizeof(ContentRecord));

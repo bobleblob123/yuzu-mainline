@@ -1,16 +1,14 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <array>
-#include <memory>
 #include <string>
 #include "common/common_funcs.h"
 #include "common/common_types.h"
 #include "common/swap.h"
-#include "core/file_sys/vfs.h"
+#include "core/file_sys/vfs/vfs_types.h"
 
 namespace FileSys {
 
@@ -66,8 +64,8 @@ struct RawNACP {
     u64_le cache_storage_size;
     u64_le cache_storage_journal_size;
     u64_le cache_storage_data_and_journal_max_size;
-    u64_le cache_storage_max_index;
-    INSERT_PADDING_BYTES(0xE70);
+    u16_le cache_storage_max_index;
+    INSERT_PADDING_BYTES(0xE76);
 };
 static_assert(sizeof(RawNACP) == 0x4000, "RawNACP has incorrect size.");
 
@@ -83,16 +81,17 @@ enum class Language : u8 {
     Italian = 7,
     Dutch = 8,
     CanadianFrench = 9,
-    Portugese = 10,
+    Portuguese = 10,
     Russian = 11,
     Korean = 12,
-    Taiwanese = 13,
-    Chinese = 14,
+    TraditionalChinese = 13,
+    SimplifiedChinese = 14,
+    BrazilianPortuguese = 15,
 
     Default = 255,
 };
 
-extern const std::array<const char*, 15> LANGUAGE_NAMES;
+extern const std::array<const char*, 16> LANGUAGE_NAMES;
 
 // A class representing the format used by NX metadata files, typically named Control.nacp.
 // These store application name, dev name, title id, and other miscellaneous data.
@@ -102,9 +101,9 @@ public:
     explicit NACP(VirtualFile file);
     ~NACP();
 
-    const LanguageEntry& GetLanguageEntry(Language language = Language::Default) const;
-    std::string GetApplicationName(Language language = Language::Default) const;
-    std::string GetDeveloperName(Language language = Language::Default) const;
+    const LanguageEntry& GetLanguageEntry() const;
+    std::string GetApplicationName() const;
+    std::string GetDeveloperName() const;
     u64 GetTitleId() const;
     u64 GetDLCBaseTitleId() const;
     std::string GetVersionString() const;
@@ -113,6 +112,9 @@ public:
     u32 GetSupportedLanguages() const;
     std::vector<u8> GetRawBytes() const;
     bool GetUserAccountSwitchLock() const;
+    u64 GetDeviceSaveDataSize() const;
+    u32 GetParentalControlFlag() const;
+    const std::array<u8, 0x20>& GetRatingAge() const;
 
 private:
     RawNACP raw{};

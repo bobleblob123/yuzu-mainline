@@ -1,188 +1,154 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <memory>
-
-#include "core/hle/ipc_helpers.h"
-#include "core/hle/result.h"
+#include "core/core.h"
+#include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/ldn/ldn.h"
-#include "core/hle/service/sm/sm.h"
+#include "core/hle/service/ldn/monitor_service.h"
+#include "core/hle/service/ldn/sf_monitor_service.h"
+#include "core/hle/service/ldn/sf_service.h"
+#include "core/hle/service/ldn/sf_service_monitor.h"
+#include "core/hle/service/ldn/system_local_communication_service.h"
+#include "core/hle/service/ldn/user_local_communication_service.h"
 
 namespace Service::LDN {
 
-class IMonitorService final : public ServiceFramework<IMonitorService> {
+class IMonitorServiceCreator final : public ServiceFramework<IMonitorServiceCreator> {
 public:
-    explicit IMonitorService() : ServiceFramework{"IMonitorService"} {
+    explicit IMonitorServiceCreator(Core::System& system_) : ServiceFramework{system_, "ldn:m"} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, nullptr, "GetStateForMonitor"},
-            {1, nullptr, "GetNetworkInfoForMonitor"},
-            {2, nullptr, "GetIpv4AddressForMonitor"},
-            {3, nullptr, "GetDisconnectReasonForMonitor"},
-            {4, nullptr, "GetSecurityParameterForMonitor"},
-            {5, nullptr, "GetNetworkConfigForMonitor"},
-            {100, nullptr, "InitializeMonitor"},
-            {101, nullptr, "FinalizeMonitor"},
-        };
-        // clang-format on
-
-        RegisterHandlers(functions);
-    }
-};
-
-class LDNM final : public ServiceFramework<LDNM> {
-public:
-    explicit LDNM() : ServiceFramework{"ldn:m"} {
-        // clang-format off
-        static const FunctionInfo functions[] = {
-            {0, &LDNM::CreateMonitorService, "CreateMonitorService"}
+            {0, C<&IMonitorServiceCreator::CreateMonitorService>, "CreateMonitorService"}
         };
         // clang-format on
 
         RegisterHandlers(functions);
     }
 
-    void CreateMonitorService(Kernel::HLERequestContext& ctx) {
+private:
+    Result CreateMonitorService(OutInterface<IMonitorService> out_interface) {
         LOG_DEBUG(Service_LDN, "called");
 
-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-        rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<IMonitorService>();
+        *out_interface = std::make_shared<IMonitorService>(system);
+        R_SUCCEED();
     }
 };
 
-class ISystemLocalCommunicationService final
-    : public ServiceFramework<ISystemLocalCommunicationService> {
+class ISystemServiceCreator final : public ServiceFramework<ISystemServiceCreator> {
 public:
-    explicit ISystemLocalCommunicationService()
-        : ServiceFramework{"ISystemLocalCommunicationService"} {
+    explicit ISystemServiceCreator(Core::System& system_) : ServiceFramework{system_, "ldn:s"} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, nullptr, "GetState"},
-            {1, nullptr, "GetNetworkInfo"},
-            {2, nullptr, "GetIpv4Address"},
-            {3, nullptr, "GetDisconnectReason"},
-            {4, nullptr, "GetSecurityParameter"},
-            {5, nullptr, "GetNetworkConfig"},
-            {100, nullptr, "AttachStateChangeEvent"},
-            {101, nullptr, "GetNetworkInfoLatestUpdate"},
-            {102, nullptr, "Scan"},
-            {103, nullptr, "ScanPrivate"},
-            {200, nullptr, "OpenAccessPoint"},
-            {201, nullptr, "CloseAccessPoint"},
-            {202, nullptr, "CreateNetwork"},
-            {203, nullptr, "CreateNetworkPrivate"},
-            {204, nullptr, "DestroyNetwork"},
-            {205, nullptr, "Reject"},
-            {206, nullptr, "SetAdvertiseData"},
-            {207, nullptr, "SetStationAcceptPolicy"},
-            {208, nullptr, "AddAcceptFilterEntry"},
-            {209, nullptr, "ClearAcceptFilter"},
-            {300, nullptr, "OpenStation"},
-            {301, nullptr, "CloseStation"},
-            {302, nullptr, "Connect"},
-            {303, nullptr, "ConnectPrivate"},
-            {304, nullptr, "Disconnect"},
-            {400, nullptr, "InitializeSystem"},
-            {401, nullptr, "FinalizeSystem"},
-            {402, nullptr, "SetOperationMode"},
-            {403, nullptr, "InitializeSystem2"},
-        };
-        // clang-format on
-
-        RegisterHandlers(functions);
-    }
-};
-
-class IUserLocalCommunicationService final
-    : public ServiceFramework<IUserLocalCommunicationService> {
-public:
-    explicit IUserLocalCommunicationService() : ServiceFramework{"IUserLocalCommunicationService"} {
-        // clang-format off
-        static const FunctionInfo functions[] = {
-            {0, nullptr, "GetState"},
-            {1, nullptr, "GetNetworkInfo"},
-            {2, nullptr, "GetIpv4Address"},
-            {3, nullptr, "GetDisconnectReason"},
-            {4, nullptr, "GetSecurityParameter"},
-            {5, nullptr, "GetNetworkConfig"},
-            {100, nullptr, "AttachStateChangeEvent"},
-            {101, nullptr, "GetNetworkInfoLatestUpdate"},
-            {102, nullptr, "Scan"},
-            {103, nullptr, "ScanPrivate"},
-            {104, nullptr, "SetWirelessControllerRestriction"},
-            {200, nullptr, "OpenAccessPoint"},
-            {201, nullptr, "CloseAccessPoint"},
-            {202, nullptr, "CreateNetwork"},
-            {203, nullptr, "CreateNetworkPrivate"},
-            {204, nullptr, "DestroyNetwork"},
-            {205, nullptr, "Reject"},
-            {206, nullptr, "SetAdvertiseData"},
-            {207, nullptr, "SetStationAcceptPolicy"},
-            {208, nullptr, "AddAcceptFilterEntry"},
-            {209, nullptr, "ClearAcceptFilter"},
-            {300, nullptr, "OpenStation"},
-            {301, nullptr, "CloseStation"},
-            {302, nullptr, "Connect"},
-            {303, nullptr, "ConnectPrivate"},
-            {304, nullptr, "Disconnect"},
-            {400, nullptr, "Initialize"},
-            {401, nullptr, "Finalize"},
-            {402, nullptr, "SetOperationMode"},
-        };
-        // clang-format on
-
-        RegisterHandlers(functions);
-    }
-};
-
-class LDNS final : public ServiceFramework<LDNS> {
-public:
-    explicit LDNS() : ServiceFramework{"ldn:s"} {
-        // clang-format off
-        static const FunctionInfo functions[] = {
-            {0, &LDNS::CreateSystemLocalCommunicationService, "CreateSystemLocalCommunicationService"},
+            {0, C<&ISystemServiceCreator::CreateSystemLocalCommunicationService>, "CreateSystemLocalCommunicationService"},
         };
         // clang-format on
 
         RegisterHandlers(functions);
     }
 
-    void CreateSystemLocalCommunicationService(Kernel::HLERequestContext& ctx) {
+private:
+    Result CreateSystemLocalCommunicationService(
+        OutInterface<ISystemLocalCommunicationService> out_interface) {
         LOG_DEBUG(Service_LDN, "called");
 
-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-        rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<ISystemLocalCommunicationService>();
+        *out_interface = std::make_shared<ISystemLocalCommunicationService>(system);
+        R_SUCCEED();
     }
 };
 
-class LDNU final : public ServiceFramework<LDNU> {
+class IUserServiceCreator final : public ServiceFramework<IUserServiceCreator> {
 public:
-    explicit LDNU() : ServiceFramework{"ldn:u"} {
+    explicit IUserServiceCreator(Core::System& system_) : ServiceFramework{system_, "ldn:u"} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, &LDNU::CreateUserLocalCommunicationService, "CreateUserLocalCommunicationService"},
+            {0, C<&IUserServiceCreator::CreateUserLocalCommunicationService>, "CreateUserLocalCommunicationService"},
         };
         // clang-format on
 
         RegisterHandlers(functions);
     }
 
-    void CreateUserLocalCommunicationService(Kernel::HLERequestContext& ctx) {
+private:
+    Result CreateUserLocalCommunicationService(
+        OutInterface<IUserLocalCommunicationService> out_interface) {
         LOG_DEBUG(Service_LDN, "called");
 
-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-        rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<IUserLocalCommunicationService>();
+        *out_interface = std::make_shared<IUserLocalCommunicationService>(system);
+        R_SUCCEED();
     }
 };
 
-void InstallInterfaces(SM::ServiceManager& sm) {
-    std::make_shared<LDNM>()->InstallAsService(sm);
-    std::make_shared<LDNS>()->InstallAsService(sm);
-    std::make_shared<LDNU>()->InstallAsService(sm);
+class ISfServiceCreator final : public ServiceFramework<ISfServiceCreator> {
+public:
+    explicit ISfServiceCreator(Core::System& system_, bool is_system_, const char* name_)
+        : ServiceFramework{system_, name_}, is_system{is_system_} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, C<&ISfServiceCreator::CreateNetworkService>, "CreateNetworkService"},
+            {8, C<&ISfServiceCreator::CreateNetworkServiceMonitor>, "CreateNetworkServiceMonitor"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+
+private:
+    Result CreateNetworkService(OutInterface<ISfService> out_interface, u32 input,
+                                u64 reserved_input) {
+        LOG_WARNING(Service_LDN, "(STUBBED) called reserved_input={} input={}", reserved_input,
+                    input);
+
+        *out_interface = std::make_shared<ISfService>(system);
+        R_SUCCEED();
+    }
+
+    Result CreateNetworkServiceMonitor(OutInterface<ISfServiceMonitor> out_interface,
+                                       u64 reserved_input) {
+        LOG_WARNING(Service_LDN, "(STUBBED) called reserved_input={}", reserved_input);
+
+        *out_interface = std::make_shared<ISfServiceMonitor>(system);
+        R_SUCCEED();
+    }
+
+    bool is_system{};
+};
+
+class ISfMonitorServiceCreator final : public ServiceFramework<ISfMonitorServiceCreator> {
+public:
+    explicit ISfMonitorServiceCreator(Core::System& system_) : ServiceFramework{system_, "lp2p:m"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, C<&ISfMonitorServiceCreator::CreateMonitorService>, "CreateMonitorService"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+
+private:
+    Result CreateMonitorService(OutInterface<ISfMonitorService> out_interface, u64 reserved_input) {
+        LOG_INFO(Service_LDN, "called, reserved_input={}", reserved_input);
+
+        *out_interface = std::make_shared<ISfMonitorService>(system);
+        R_SUCCEED();
+    }
+};
+
+void LoopProcess(Core::System& system) {
+    auto server_manager = std::make_unique<ServerManager>(system);
+
+    server_manager->RegisterNamedService("ldn:m", std::make_shared<IMonitorServiceCreator>(system));
+    server_manager->RegisterNamedService("ldn:s", std::make_shared<ISystemServiceCreator>(system));
+    server_manager->RegisterNamedService("ldn:u", std::make_shared<IUserServiceCreator>(system));
+
+    server_manager->RegisterNamedService(
+        "lp2p:app", std::make_shared<ISfServiceCreator>(system, false, "lp2p:app"));
+    server_manager->RegisterNamedService(
+        "lp2p:sys", std::make_shared<ISfServiceCreator>(system, true, "lp2p:sys"));
+    server_manager->RegisterNamedService("lp2p:m",
+                                         std::make_shared<ISfMonitorServiceCreator>(system));
+
+    ServerManager::RunServer(std::move(server_manager));
 }
 
 } // namespace Service::LDN

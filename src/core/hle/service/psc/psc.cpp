@@ -1,78 +1,38 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <memory>
-
-#include "common/logging/log.h"
-#include "core/hle/ipc_helpers.h"
+#include "core/hle/service/psc/ovln/receiver_service.h"
+#include "core/hle/service/psc/ovln/sender_service.h"
+#include "core/hle/service/psc/pm_control.h"
+#include "core/hle/service/psc/pm_service.h"
 #include "core/hle/service/psc/psc.h"
+#include "core/hle/service/psc/time/manager.h"
+#include "core/hle/service/psc/time/power_state_service.h"
+#include "core/hle/service/psc/time/service_manager.h"
+#include "core/hle/service/psc/time/static.h"
 #include "core/hle/service/service.h"
-#include "core/hle/service/sm/sm.h"
 
 namespace Service::PSC {
 
-class PSC_C final : public ServiceFramework<PSC_C> {
-public:
-    explicit PSC_C() : ServiceFramework{"psc:c"} {
-        // clang-format off
-        static const FunctionInfo functions[] = {
-            {0, nullptr, "Initialize"},
-            {1, nullptr, "DispatchRequest"},
-            {2, nullptr, "GetResult"},
-            {3, nullptr, "GetState"},
-            {4, nullptr, "Cancel"},
-            {5, nullptr, "PrintModuleInformation"},
-            {6, nullptr, "GetModuleInformation"},
-        };
-        // clang-format on
+void LoopProcess(Core::System& system) {
+    auto server_manager = std::make_unique<ServerManager>(system);
 
-        RegisterHandlers(functions);
-    }
-};
+    server_manager->RegisterNamedService("psc:c", std::make_shared<IPmControl>(system));
+    server_manager->RegisterNamedService("psc:m", std::make_shared<IPmService>(system));
+    server_manager->RegisterNamedService("ovln:rcv", std::make_shared<IReceiverService>(system));
+    server_manager->RegisterNamedService("ovln:snd", std::make_shared<ISenderService>(system));
 
-class IPmModule final : public ServiceFramework<IPmModule> {
-public:
-    explicit IPmModule() : ServiceFramework{"IPmModule"} {
-        // clang-format off
-        static const FunctionInfo functions[] = {
-            {0, nullptr, "Initialize"},
-            {1, nullptr, "GetRequest"},
-            {2, nullptr, "Acknowledge"},
-            {3, nullptr, "Finalize"},
-            {4, nullptr, "AcknowledgeEx"},
-        };
-        // clang-format on
+    auto time = std::make_shared<Time::TimeManager>(system);
 
-        RegisterHandlers(functions);
-    }
-};
+    server_manager->RegisterNamedService(
+        "time:m", std::make_shared<Time::ServiceManager>(system, time, server_manager.get()));
+    server_manager->RegisterNamedService(
+        "time:su", std::make_shared<Time::StaticService>(
+                       system, Time::StaticServiceSetupInfo{0, 0, 0, 0, 0, 1}, time, "time:su"));
+    server_manager->RegisterNamedService("time:al",
+                                         std::make_shared<Time::IAlarmService>(system, time));
 
-class PSC_M final : public ServiceFramework<PSC_M> {
-public:
-    explicit PSC_M() : ServiceFramework{"psc:m"} {
-        // clang-format off
-        static const FunctionInfo functions[] = {
-            {0, &PSC_M::GetPmModule, "GetPmModule"},
-        };
-        // clang-format on
-
-        RegisterHandlers(functions);
-    }
-
-private:
-    void GetPmModule(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_PSC, "called");
-
-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-        rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<IPmModule>();
-    }
-};
-
-void InstallInterfaces(SM::ServiceManager& sm) {
-    std::make_shared<PSC_C>()->InstallAsService(sm);
-    std::make_shared<PSC_M>()->InstallAsService(sm);
+    ServerManager::RunServer(std::move(server_manager));
 }
 
 } // namespace Service::PSC

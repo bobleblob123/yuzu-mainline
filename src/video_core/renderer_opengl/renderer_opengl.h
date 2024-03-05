@@ -1,6 +1,5 @@
-// Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2014 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
@@ -8,109 +7,74 @@
 #include <glad/glad.h>
 #include "common/common_types.h"
 #include "common/math_util.h"
+
 #include "video_core/renderer_base.h"
+#include "video_core/renderer_opengl/gl_device.h"
+#include "video_core/renderer_opengl/gl_rasterizer.h"
 #include "video_core/renderer_opengl/gl_resource_manager.h"
-#include "video_core/renderer_opengl/gl_state.h"
+#include "video_core/renderer_opengl/gl_shader_manager.h"
+#include "video_core/renderer_opengl/gl_state_tracker.h"
 
 namespace Core {
 class System;
-}
+class TelemetrySession;
+} // namespace Core
 
 namespace Core::Frontend {
 class EmuWindow;
 }
 
-namespace Layout {
-struct FramebufferLayout;
+namespace Tegra {
+class GPU;
 }
 
 namespace OpenGL {
 
-/// Structure used for storing information about the textures for the Switch screen
-struct TextureInfo {
-    OGLTexture resource;
-    GLsizei width;
-    GLsizei height;
-    GLenum gl_format;
-    GLenum gl_type;
-    Tegra::FramebufferConfig::PixelFormat pixel_format;
-};
-
-/// Structure used for storing information about the display target for the Switch screen
-struct ScreenInfo {
-    GLuint display_texture{};
-    bool display_srgb{};
-    const Common::Rectangle<float> display_texcoords{0.0f, 0.0f, 1.0f, 1.0f};
-    TextureInfo texture;
-};
+class BlitScreen;
 
 class RendererOpenGL final : public VideoCore::RendererBase {
 public:
-    explicit RendererOpenGL(Core::Frontend::EmuWindow& emu_window, Core::System& system);
+    explicit RendererOpenGL(Core::TelemetrySession& telemetry_session_,
+                            Core::Frontend::EmuWindow& emu_window_,
+                            Tegra::MaxwellDeviceMemoryManager& device_memory_, Tegra::GPU& gpu_,
+                            std::unique_ptr<Core::Frontend::GraphicsContext> context_);
     ~RendererOpenGL() override;
 
-    /// Swap buffers (render frame)
-    void SwapBuffers(const Tegra::FramebufferConfig* framebuffer) override;
+    void Composite(std::span<const Tegra::FramebufferConfig> framebuffers) override;
 
-    /// Initialize the renderer
-    bool Init() override;
+    std::vector<u8> GetAppletCaptureBuffer() override;
 
-    /// Shutdown the renderer
-    void ShutDown() override;
+    VideoCore::RasterizerInterface* ReadRasterizer() override {
+        return &rasterizer;
+    }
+
+    [[nodiscard]] std::string GetDeviceVendor() const override {
+        return device.GetVendorName();
+    }
 
 private:
-    void InitOpenGLObjects();
     void AddTelemetryFields();
-    void CreateRasterizer();
 
-    void ConfigureFramebufferTexture(TextureInfo& texture,
-                                     const Tegra::FramebufferConfig& framebuffer);
-    void DrawScreen(const Layout::FramebufferLayout& layout);
-    void DrawScreenTriangles(const ScreenInfo& screen_info, float x, float y, float w, float h);
-    void UpdateFramerate();
+    void RenderToBuffer(std::span<const Tegra::FramebufferConfig> framebuffers,
+                        const Layout::FramebufferLayout& layout, void* dst);
+    void RenderScreenshot(std::span<const Tegra::FramebufferConfig> framebuffers);
+    void RenderAppletCaptureLayer(std::span<const Tegra::FramebufferConfig> framebuffers);
 
-    void CaptureScreenshot();
-    void UpdateBacklight();
-
-    // Loads framebuffer from emulated memory into the display information structure
-    void LoadFBToScreenInfo(const Tegra::FramebufferConfig& framebuffer);
-    // Fills active OpenGL texture with the given RGBA color.
-    void LoadColorToActiveGLTexture(u8 color_r, u8 color_g, u8 color_b, u8 color_a,
-                                    const TextureInfo& texture);
-
+    Core::TelemetrySession& telemetry_session;
     Core::Frontend::EmuWindow& emu_window;
-    Core::System& system;
+    Tegra::MaxwellDeviceMemoryManager& device_memory;
+    Tegra::GPU& gpu;
 
-    OpenGLState state;
-
-    // OpenGL object IDs
-    OGLVertexArray vertex_array;
-    OGLBuffer vertex_buffer;
-    OGLProgram shader;
+    Device device;
+    StateTracker state_tracker;
+    ProgramManager program_manager;
+    RasterizerOpenGL rasterizer;
     OGLFramebuffer screenshot_framebuffer;
+    OGLFramebuffer capture_framebuffer;
+    OGLRenderbuffer capture_renderbuffer;
 
-    /// Display information for Switch screen
-    ScreenInfo screen_info;
-
-    /// OpenGL framebuffer data
-    std::vector<u8> gl_framebuffer_data;
-
-    // Shader uniform location indices
-    GLuint uniform_modelview_matrix;
-    GLuint uniform_color_texture;
-    GLuint uniform_backlight;
-
-    // Shader attribute input indices
-    GLuint attrib_position;
-    GLuint attrib_tex_coord;
-
-    /// Used for transforming the framebuffer orientation
-    Tegra::FramebufferConfig::TransformFlags framebuffer_transform_flags;
-    Common::Rectangle<int> framebuffer_crop_rect;
-
-    // Used for backlight transitions
-    u64 fade_time_max = 0;
-    f32 value_max = 0;
+    std::unique_ptr<BlitScreen> blit_screen;
+    std::unique_ptr<BlitScreen> blit_applet;
 };
 
 } // namespace OpenGL

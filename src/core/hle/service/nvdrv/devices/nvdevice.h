@@ -1,18 +1,21 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
+#include <span>
 #include <vector>
-#include "common/bit_field.h"
+
 #include "common/common_types.h"
-#include "common/swap.h"
+#include "core/hle/service/nvdrv/core/container.h"
 #include "core/hle/service/nvdrv/nvdata.h"
-#include "core/hle/service/service.h"
 
 namespace Core {
 class System;
+}
+
+namespace Kernel {
+class KEvent;
 }
 
 namespace Service::Nvidia::Devices {
@@ -21,27 +24,56 @@ namespace Service::Nvidia::Devices {
 /// implement the ioctl interface.
 class nvdevice {
 public:
-    explicit nvdevice(Core::System& system) : system{system} {};
+    explicit nvdevice(Core::System& system_) : system{system_} {}
     virtual ~nvdevice() = default;
-    union Ioctl {
-        u32_le raw;
-        BitField<0, 8, u32> cmd;
-        BitField<8, 8, u32> group;
-        BitField<16, 14, u32> length;
-        BitField<30, 1, u32> is_in;
-        BitField<31, 1, u32> is_out;
-    };
 
     /**
-     * Handles an ioctl request.
+     * Handles an ioctl1 request.
      * @param command The ioctl command id.
      * @param input A buffer containing the input data for the ioctl.
      * @param output A buffer where the output data will be written to.
      * @returns The result code of the ioctl.
      */
-    virtual u32 ioctl(Ioctl command, const std::vector<u8>& input, const std::vector<u8>& input2,
-                      std::vector<u8>& output, std::vector<u8>& output2, IoctlCtrl& ctrl,
-                      IoctlVersion version) = 0;
+    virtual NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+                            std::span<u8> output) = 0;
+
+    /**
+     * Handles an ioctl2 request.
+     * @param command The ioctl command id.
+     * @param input A buffer containing the input data for the ioctl.
+     * @param inline_input A buffer containing the input data for the ioctl which has been inlined.
+     * @param output A buffer where the output data will be written to.
+     * @returns The result code of the ioctl.
+     */
+    virtual NvResult Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+                            std::span<const u8> inline_input, std::span<u8> output) = 0;
+
+    /**
+     * Handles an ioctl3 request.
+     * @param command The ioctl command id.
+     * @param input A buffer containing the input data for the ioctl.
+     * @param output A buffer where the output data will be written to.
+     * @param inline_output A buffer where the inlined output data will be written to.
+     * @returns The result code of the ioctl.
+     */
+    virtual NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+                            std::span<u8> output, std::span<u8> inline_output) = 0;
+
+    /**
+     * Called once a device is opened
+     * @param fd The device fd
+     */
+    virtual void OnOpen(NvCore::SessionId session_id, DeviceFD fd) = 0;
+
+    /**
+     * Called once a device is closed
+     * @param fd The device fd
+     */
+    virtual void OnClose(DeviceFD fd) = 0;
+
+    virtual Kernel::KEvent* QueryEvent(u32 event_id) {
+        return nullptr;
+    }
 
 protected:
     Core::System& system;

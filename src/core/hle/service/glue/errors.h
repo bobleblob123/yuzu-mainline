@@ -1,6 +1,5 @@
-// Copyright 2019 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
@@ -8,9 +7,8 @@
 
 namespace Service::Glue {
 
-constexpr ResultCode ERR_INVALID_RESOURCE{ErrorModule::ARP, 0x1E};
-constexpr ResultCode ERR_INVALID_PROCESS_ID{ErrorModule::ARP, 0x1F};
-constexpr ResultCode ERR_INVALID_ACCESS{ErrorModule::ARP, 0x2A};
-constexpr ResultCode ERR_NOT_REGISTERED{ErrorModule::ARP, 0x66};
+constexpr Result ResultInvalidProcessId{ErrorModule::ARP, 31};
+constexpr Result ResultAlreadyBound{ErrorModule::ARP, 42};
+constexpr Result ResultProcessIdNotRegistered{ErrorModule::ARP, 102};
 
 } // namespace Service::Glue

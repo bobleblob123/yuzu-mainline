@@ -1,6 +1,5 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/logging/log.h"
 #include "core/file_sys/romfs.h"
@@ -9,6 +8,7 @@
 #include "core/file_sys/system_archive/shared_font.h"
 #include "core/file_sys/system_archive/system_archive.h"
 #include "core/file_sys/system_archive/system_version.h"
+#include "core/file_sys/system_archive/time_zone_binary.h"
 
 namespace FileSys::SystemArchive {
 
@@ -38,7 +38,7 @@ constexpr std::array<SystemArchiveDescriptor, SYSTEM_ARCHIVE_COUNT> SYSTEM_ARCHI
     {0x010000000000080B, "LocalNews", nullptr},
     {0x010000000000080C, "Eula", nullptr},
     {0x010000000000080D, "UrlBlackList", nullptr},
-    {0x010000000000080E, "TimeZoneBinary", nullptr},
+    {0x010000000000080E, "TimeZoneBinary", &TimeZoneBinary},
     {0x010000000000080F, "CertStoreCruiser", nullptr},
     {0x0100000000000810, "FontNintendoExtension", &FontNintendoExtension},
     {0x0100000000000811, "FontStandard", &FontStandard},
@@ -67,25 +67,29 @@ constexpr std::array<SystemArchiveDescriptor, SYSTEM_ARCHIVE_COUNT> SYSTEM_ARCHI
 }};
 
 VirtualFile SynthesizeSystemArchive(const u64 title_id) {
-    if (title_id < SYSTEM_ARCHIVES.front().title_id || title_id > SYSTEM_ARCHIVES.back().title_id)
+    if (title_id < SYSTEM_ARCHIVES.front().title_id || title_id > SYSTEM_ARCHIVES.back().title_id) {
         return nullptr;
+    }
 
     const auto& desc = SYSTEM_ARCHIVES[title_id - SYSTEM_ARCHIVE_BASE_TITLE_ID];
 
     LOG_INFO(Service_FS, "Synthesizing system archive '{}' (0x{:016X}).", desc.name, desc.title_id);
 
-    if (desc.supplier == nullptr)
+    if (desc.supplier == nullptr) {
         return nullptr;
+    }
 
     const auto dir = desc.supplier();
 
-    if (dir == nullptr)
+    if (dir == nullptr) {
         return nullptr;
+    }
 
     const auto romfs = CreateRomFS(dir);
 
-    if (romfs == nullptr)
+    if (romfs == nullptr) {
         return nullptr;
+    }
 
     LOG_INFO(Service_FS, "    - System archive generation successful!");
     return romfs;

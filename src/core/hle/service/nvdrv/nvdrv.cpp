@@ -1,13 +1,14 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2021 yuzu Emulator Project
+// SPDX-FileCopyrightText: 2021 Skyline Team and Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <utility>
 
 #include <fmt/format.h>
-#include "core/hle/ipc_helpers.h"
-#include "core/hle/kernel/readable_event.h"
-#include "core/hle/kernel/writable_event.h"
+#include "core/core.h"
+#include "core/hle/kernel/k_event.h"
+#include "core/hle/service/ipc_helpers.h"
+#include "core/hle/service/nvdrv/core/container.h"
 #include "core/hle/service/nvdrv/devices/nvdevice.h"
 #include "core/hle/service/nvdrv/devices/nvdisp_disp0.h"
 #include "core/hle/service/nvdrv/devices/nvhost_as_gpu.h"
@@ -15,98 +16,216 @@
 #include "core/hle/service/nvdrv/devices/nvhost_ctrl_gpu.h"
 #include "core/hle/service/nvdrv/devices/nvhost_gpu.h"
 #include "core/hle/service/nvdrv/devices/nvhost_nvdec.h"
+#include "core/hle/service/nvdrv/devices/nvhost_nvdec_common.h"
 #include "core/hle/service/nvdrv/devices/nvhost_nvjpg.h"
 #include "core/hle/service/nvdrv/devices/nvhost_vic.h"
 #include "core/hle/service/nvdrv/devices/nvmap.h"
-#include "core/hle/service/nvdrv/interface.h"
 #include "core/hle/service/nvdrv/nvdrv.h"
+#include "core/hle/service/nvdrv/nvdrv_interface.h"
 #include "core/hle/service/nvdrv/nvmemp.h"
-#include "core/hle/service/nvflinger/nvflinger.h"
+#include "core/hle/service/nvnflinger/nvnflinger.h"
+#include "core/hle/service/server_manager.h"
+#include "video_core/gpu.h"
 
 namespace Service::Nvidia {
 
-void InstallInterfaces(SM::ServiceManager& service_manager, NVFlinger::NVFlinger& nvflinger,
-                       Core::System& system) {
-    auto module_ = std::make_shared<Module>(system);
-    std::make_shared<NVDRV>(module_, "nvdrv")->InstallAsService(service_manager);
-    std::make_shared<NVDRV>(module_, "nvdrv:a")->InstallAsService(service_manager);
-    std::make_shared<NVDRV>(module_, "nvdrv:s")->InstallAsService(service_manager);
-    std::make_shared<NVDRV>(module_, "nvdrv:t")->InstallAsService(service_manager);
-    std::make_shared<NVMEMP>()->InstallAsService(service_manager);
-    nvflinger.SetNVDrvInstance(module_);
+EventInterface::EventInterface(Module& module_) : module{module_}, guard{}, on_signal{} {}
+
+EventInterface::~EventInterface() = default;
+
+Kernel::KEvent* EventInterface::CreateEvent(std::string name) {
+    Kernel::KEvent* new_event = module.service_context.CreateEvent(std::move(name));
+    return new_event;
 }
 
-Module::Module(Core::System& system) {
-    auto& kernel = system.Kernel();
-    for (u32 i = 0; i < MaxNvEvents; i++) {
-        std::string event_label = fmt::format("NVDRV::NvEvent_{}", i);
-        events_interface.events[i] =
-            Kernel::WritableEvent::CreateEventPair(kernel, Kernel::ResetType::Manual, event_label);
-        events_interface.status[i] = EventState::Free;
-        events_interface.registered[i] = false;
+void EventInterface::FreeEvent(Kernel::KEvent* event) {
+    module.service_context.CloseEvent(event);
+}
+
+void LoopProcess(Core::System& system) {
+    auto server_manager = std::make_unique<ServerManager>(system);
+    auto module = std::make_shared<Module>(system);
+    const auto NvdrvInterfaceFactoryForApplication = [&, module] {
+        return std::make_shared<NVDRV>(system, module, "nvdrv");
+    };
+    const auto NvdrvInterfaceFactoryForApplets = [&, module] {
+        return std::make_shared<NVDRV>(system, module, "nvdrv:a");
+    };
+    const auto NvdrvInterfaceFactoryForSysmodules = [&, module] {
+        return std::make_shared<NVDRV>(system, module, "nvdrv:s");
+    };
+    const auto NvdrvInterfaceFactoryForTesting = [&, module] {
+        return std::make_shared<NVDRV>(system, module, "nvdrv:t");
+    };
+    server_manager->RegisterNamedService("nvdrv", NvdrvInterfaceFactoryForApplication);
+    server_manager->RegisterNamedService("nvdrv:a", NvdrvInterfaceFactoryForApplets);
+    server_manager->RegisterNamedService("nvdrv:s", NvdrvInterfaceFactoryForSysmodules);
+    server_manager->RegisterNamedService("nvdrv:t", NvdrvInterfaceFactoryForTesting);
+    server_manager->RegisterNamedService("nvmemp", std::make_shared<NVMEMP>(system));
+    ServerManager::RunServer(std::move(server_manager));
+}
+
+Module::Module(Core::System& system)
+    : container{system.Host1x()}, service_context{system, "nvdrv"}, events_interface{*this} {
+    builders["/dev/nvhost-as-gpu"] = [this, &system](DeviceFD fd) {
+        auto device = std::make_shared<Devices::nvhost_as_gpu>(system, *this, container);
+        return open_files.emplace(fd, std::move(device)).first;
+    };
+    builders["/dev/nvhost-gpu"] = [this, &system](DeviceFD fd) {
+        auto device = std::make_shared<Devices::nvhost_gpu>(system, events_interface, container);
+        return open_files.emplace(fd, std::move(device)).first;
+    };
+    builders["/dev/nvhost-ctrl-gpu"] = [this, &system](DeviceFD fd) {
+        auto device = std::make_shared<Devices::nvhost_ctrl_gpu>(system, events_interface);
+        return open_files.emplace(fd, std::move(device)).first;
+    };
+    builders["/dev/nvmap"] = [this, &system](DeviceFD fd) {
+        auto device = std::make_shared<Devices::nvmap>(system, container);
+        return open_files.emplace(fd, std::move(device)).first;
+    };
+    builders["/dev/nvdisp_disp0"] = [this, &system](DeviceFD fd) {
+        auto device = std::make_shared<Devices::nvdisp_disp0>(system, container);
+        return open_files.emplace(fd, std::move(device)).first;
+    };
+    builders["/dev/nvhost-ctrl"] = [this, &system](DeviceFD fd) {
+        auto device = std::make_shared<Devices::nvhost_ctrl>(system, events_interface, container);
+        return open_files.emplace(fd, std::move(device)).first;
+    };
+    builders["/dev/nvhost-nvdec"] = [this, &system](DeviceFD fd) {
+        auto device = std::make_shared<Devices::nvhost_nvdec>(system, container);
+        return open_files.emplace(fd, std::move(device)).first;
+    };
+    builders["/dev/nvhost-nvjpg"] = [this, &system](DeviceFD fd) {
+        auto device = std::make_shared<Devices::nvhost_nvjpg>(system);
+        return open_files.emplace(fd, std::move(device)).first;
+    };
+    builders["/dev/nvhost-vic"] = [this, &system](DeviceFD fd) {
+        auto device = std::make_shared<Devices::nvhost_vic>(system, container);
+        return open_files.emplace(fd, std::move(device)).first;
+    };
+}
+
+Module::~Module() {}
+
+NvResult Module::VerifyFD(DeviceFD fd) const {
+    if (fd < 0) {
+        LOG_ERROR(Service_NVDRV, "Invalid DeviceFD={}!", fd);
+        return NvResult::InvalidState;
     }
-    auto nvmap_dev = std::make_shared<Devices::nvmap>(system);
-    devices["/dev/nvhost-as-gpu"] = std::make_shared<Devices::nvhost_as_gpu>(system, nvmap_dev);
-    devices["/dev/nvhost-gpu"] = std::make_shared<Devices::nvhost_gpu>(system, nvmap_dev);
-    devices["/dev/nvhost-ctrl-gpu"] = std::make_shared<Devices::nvhost_ctrl_gpu>(system);
-    devices["/dev/nvmap"] = nvmap_dev;
-    devices["/dev/nvdisp_disp0"] = std::make_shared<Devices::nvdisp_disp0>(system, nvmap_dev);
-    devices["/dev/nvhost-ctrl"] = std::make_shared<Devices::nvhost_ctrl>(system, events_interface);
-    devices["/dev/nvhost-nvdec"] = std::make_shared<Devices::nvhost_nvdec>(system);
-    devices["/dev/nvhost-nvjpg"] = std::make_shared<Devices::nvhost_nvjpg>(system);
-    devices["/dev/nvhost-vic"] = std::make_shared<Devices::nvhost_vic>(system);
+
+    if (open_files.find(fd) == open_files.end()) {
+        LOG_ERROR(Service_NVDRV, "Could not find DeviceFD={}!", fd);
+        return NvResult::NotImplemented;
+    }
+
+    return NvResult::Success;
 }
 
-Module::~Module() = default;
+DeviceFD Module::Open(const std::string& device_name, NvCore::SessionId session_id) {
+    auto it = builders.find(device_name);
+    if (it == builders.end()) {
+        LOG_ERROR(Service_NVDRV, "Trying to open unknown device {}", device_name);
+        return INVALID_NVDRV_FD;
+    }
 
-u32 Module::Open(const std::string& device_name) {
-    ASSERT_MSG(devices.find(device_name) != devices.end(), "Trying to open unknown device {}",
-               device_name);
+    const DeviceFD fd = next_fd++;
+    auto& builder = it->second;
+    auto device = builder(fd)->second;
 
-    auto device = devices[device_name];
-    const u32 fd = next_fd++;
-
-    open_files[fd] = std::move(device);
+    device->OnOpen(session_id, fd);
 
     return fd;
 }
 
-u32 Module::Ioctl(u32 fd, u32 command, const std::vector<u8>& input, const std::vector<u8>& input2,
-                  std::vector<u8>& output, std::vector<u8>& output2, IoctlCtrl& ctrl,
-                  IoctlVersion version) {
-    auto itr = open_files.find(fd);
-    ASSERT_MSG(itr != open_files.end(), "Tried to talk to an invalid device");
+NvResult Module::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+                        std::span<u8> output) {
+    if (fd < 0) {
+        LOG_ERROR(Service_NVDRV, "Invalid DeviceFD={}!", fd);
+        return NvResult::InvalidState;
+    }
 
-    auto& device = itr->second;
-    return device->ioctl({command}, input, input2, output, output2, ctrl, version);
+    const auto itr = open_files.find(fd);
+
+    if (itr == open_files.end()) {
+        LOG_ERROR(Service_NVDRV, "Could not find DeviceFD={}!", fd);
+        return NvResult::NotImplemented;
+    }
+
+    return itr->second->Ioctl1(fd, command, input, output);
 }
 
-ResultCode Module::Close(u32 fd) {
-    auto itr = open_files.find(fd);
-    ASSERT_MSG(itr != open_files.end(), "Tried to talk to an invalid device");
+NvResult Module::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+                        std::span<const u8> inline_input, std::span<u8> output) {
+    if (fd < 0) {
+        LOG_ERROR(Service_NVDRV, "Invalid DeviceFD={}!", fd);
+        return NvResult::InvalidState;
+    }
+
+    const auto itr = open_files.find(fd);
+
+    if (itr == open_files.end()) {
+        LOG_ERROR(Service_NVDRV, "Could not find DeviceFD={}!", fd);
+        return NvResult::NotImplemented;
+    }
+
+    return itr->second->Ioctl2(fd, command, input, inline_input, output);
+}
+
+NvResult Module::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
+                        std::span<u8> inline_output) {
+    if (fd < 0) {
+        LOG_ERROR(Service_NVDRV, "Invalid DeviceFD={}!", fd);
+        return NvResult::InvalidState;
+    }
+
+    const auto itr = open_files.find(fd);
+
+    if (itr == open_files.end()) {
+        LOG_ERROR(Service_NVDRV, "Could not find DeviceFD={}!", fd);
+        return NvResult::NotImplemented;
+    }
+
+    return itr->second->Ioctl3(fd, command, input, output, inline_output);
+}
+
+NvResult Module::Close(DeviceFD fd) {
+    if (fd < 0) {
+        LOG_ERROR(Service_NVDRV, "Invalid DeviceFD={}!", fd);
+        return NvResult::InvalidState;
+    }
+
+    const auto itr = open_files.find(fd);
+
+    if (itr == open_files.end()) {
+        LOG_ERROR(Service_NVDRV, "Could not find DeviceFD={}!", fd);
+        return NvResult::NotImplemented;
+    }
+
+    itr->second->OnClose(fd);
 
     open_files.erase(itr);
 
-    // TODO(flerovium): return correct result code if operation failed.
-    return RESULT_SUCCESS;
+    return NvResult::Success;
 }
 
-void Module::SignalSyncpt(const u32 syncpoint_id, const u32 value) {
-    for (u32 i = 0; i < MaxNvEvents; i++) {
-        if (events_interface.assigned_syncpt[i] == syncpoint_id &&
-            events_interface.assigned_value[i] == value) {
-            events_interface.LiberateEvent(i);
-            events_interface.events[i].writable->Signal();
-        }
+NvResult Module::QueryEvent(DeviceFD fd, u32 event_id, Kernel::KEvent*& event) {
+    if (fd < 0) {
+        LOG_ERROR(Service_NVDRV, "Invalid DeviceFD={}!", fd);
+        return NvResult::InvalidState;
     }
-}
 
-Kernel::SharedPtr<Kernel::ReadableEvent> Module::GetEvent(const u32 event_id) const {
-    return events_interface.events[event_id].readable;
-}
+    const auto itr = open_files.find(fd);
 
-Kernel::SharedPtr<Kernel::WritableEvent> Module::GetEventWriteable(const u32 event_id) const {
-    return events_interface.events[event_id].writable;
+    if (itr == open_files.end()) {
+        LOG_ERROR(Service_NVDRV, "Could not find DeviceFD={}!", fd);
+        return NvResult::NotImplemented;
+    }
+
+    event = itr->second->QueryEvent(event_id);
+    if (!event) {
+        return NvResult::BadParameter;
+    }
+    return NvResult::Success;
 }
 
 } // namespace Service::Nvidia

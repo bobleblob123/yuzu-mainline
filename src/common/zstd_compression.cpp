@@ -1,11 +1,9 @@
-// Copyright 2019 yuzu Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
 #include <zstd.h>
 
-#include "common/assert.h"
 #include "common/zstd_compression.h"
 
 namespace Common::Compression {
@@ -33,9 +31,9 @@ std::vector<u8> CompressDataZSTDDefault(const u8* source, std::size_t source_siz
     return CompressDataZSTD(source, source_size, ZSTD_CLEVEL_DEFAULT);
 }
 
-std::vector<u8> DecompressDataZSTD(const std::vector<u8>& compressed) {
+std::vector<u8> DecompressDataZSTD(std::span<const u8> compressed) {
     const std::size_t decompressed_size =
-        ZSTD_getDecompressedSize(compressed.data(), compressed.size());
+        ZSTD_getFrameContentSize(compressed.data(), compressed.size());
     std::vector<u8> decompressed(decompressed_size);
 
     const std::size_t uncompressed_result_size = ZSTD_decompress(

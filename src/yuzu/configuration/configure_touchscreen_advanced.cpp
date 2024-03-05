@@ -1,10 +1,9 @@
-// Copyright 2016 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2016 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <memory>
+#include "common/settings.h"
 #include "ui_configure_touchscreen_advanced.h"
-#include "yuzu/configuration/config.h"
 #include "yuzu/configuration/configure_touchscreen_advanced.h"
 
 ConfigureTouchscreenAdvanced::ConfigureTouchscreenAdvanced(QWidget* parent)
@@ -33,21 +32,18 @@ void ConfigureTouchscreenAdvanced::RetranslateUI() {
 }
 
 void ConfigureTouchscreenAdvanced::ApplyConfiguration() {
-    Settings::values.touchscreen.finger = ui->finger_box->value();
     Settings::values.touchscreen.diameter_x = ui->diameter_x_box->value();
     Settings::values.touchscreen.diameter_y = ui->diameter_y_box->value();
     Settings::values.touchscreen.rotation_angle = ui->angle_box->value();
 }
 
 void ConfigureTouchscreenAdvanced::LoadConfiguration() {
-    ui->finger_box->setValue(Settings::values.touchscreen.finger);
     ui->diameter_x_box->setValue(Settings::values.touchscreen.diameter_x);
     ui->diameter_y_box->setValue(Settings::values.touchscreen.diameter_y);
     ui->angle_box->setValue(Settings::values.touchscreen.rotation_angle);
 }
 
 void ConfigureTouchscreenAdvanced::RestoreDefaults() {
-    ui->finger_box->setValue(0);
     ui->diameter_x_box->setValue(15);
     ui->diameter_y_box->setValue(15);
     ui->angle_box->setValue(0);

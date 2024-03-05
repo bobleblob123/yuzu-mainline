@@ -1,18 +1,26 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
-#include "core/hle/kernel/hle_ipc.h"
 #include "core/hle/service/service.h"
+
+namespace Core {
+class System;
+}
 
 namespace Service::Sockets {
 
 class NSD final : public ServiceFramework<NSD> {
 public:
-    explicit NSD(const char* name);
+    explicit NSD(Core::System& system_, const char* name);
     ~NSD() override;
+
+private:
+    void Resolve(HLERequestContext& ctx);
+    void ResolveEx(HLERequestContext& ctx);
+    void GetEnvironmentIdentifier(HLERequestContext& ctx);
+    void GetApplicationServerEnvironmentType(HLERequestContext& ctx);
 };
 
 } // namespace Service::Sockets

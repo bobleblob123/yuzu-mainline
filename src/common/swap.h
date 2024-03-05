@@ -1,58 +1,19 @@
-// Copyright (c) 2012- PPSSPP Project / Dolphin Project.
-
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, version 2.0 or later versions.
-
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License 2.0 for more details.
-
-// A copy of the GPL 2.0 should have been included with the program.
-// If not, see http://www.gnu.org/licenses/
+// SPDX-FileCopyrightText: 2012 PPSSPP Project
+// SPDX-FileCopyrightText: 2012 Dolphin Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #pragma once
 
-#include <type_traits>
-
 #if defined(_MSC_VER)
 #include <cstdlib>
 #endif
+#include <bit>
 #include <cstring>
+#include <type_traits>
 #include "common/common_types.h"
-
-// GCC
-#ifdef __GNUC__
-
-#if __BYTE_ORDER__ && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__) && !defined(COMMON_LITTLE_ENDIAN)
-#define COMMON_LITTLE_ENDIAN 1
-#elif __BYTE_ORDER__ && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__) && !defined(COMMON_BIG_ENDIAN)
-#define COMMON_BIG_ENDIAN 1
-#endif
-
-// LLVM/clang
-#elif defined(__clang__)
-
-#if __LITTLE_ENDIAN__ && !defined(COMMON_LITTLE_ENDIAN)
-#define COMMON_LITTLE_ENDIAN 1
-#elif __BIG_ENDIAN__ && !defined(COMMON_BIG_ENDIAN)
-#define COMMON_BIG_ENDIAN 1
-#endif
-
-// MSVC
-#elif defined(_MSC_VER) && !defined(COMMON_BIG_ENDIAN) && !defined(COMMON_LITTLE_ENDIAN)
-
-#define COMMON_LITTLE_ENDIAN 1
-#endif
-
-// Worst case, default to little endian.
-#if !COMMON_BIG_ENDIAN && !COMMON_LITTLE_ENDIAN
-#define COMMON_LITTLE_ENDIAN 1
-#endif
 
 namespace Common {
 
@@ -268,7 +229,7 @@ public:
         value = swap(swap() - 1);
         return old;
     }
-    // Comparaison
+    // Comparison
     // v == i
     bool operator==(const swapped_t& i) const {
         return swap() == i.swap();
@@ -407,7 +368,7 @@ public:
     // Member
     /** todo **/
 
-    // Arithmetics
+    // Arithmetic
     template <typename S, typename T2, typename F2>
     friend S operator+(const S& p, const swapped_t v);
 
@@ -423,7 +384,7 @@ public:
     template <typename S, typename T2, typename F2>
     friend S operator%(const S& p, const swapped_t v);
 
-    // Arithmetics + assignements
+    // Arithmetic + assignments
     template <typename S, typename T2, typename F2>
     friend S operator+=(const S& p, const swapped_t v);
 
@@ -454,7 +415,7 @@ public:
     friend bool operator==(const S& p, const swapped_t v);
 };
 
-// Arithmetics
+// Arithmetic
 template <typename S, typename T, typename F>
 S operator+(const S& i, const swap_struct_t<T, F> v) {
     return i + v.swap();
@@ -480,7 +441,7 @@ S operator%(const S& i, const swap_struct_t<T, F> v) {
     return i % v.swap();
 }
 
-// Arithmetics + assignements
+// Arithmetic + assignments
 template <typename S, typename T, typename F>
 S& operator+=(S& i, const swap_struct_t<T, F> v) {
     i += v.swap();
@@ -499,12 +460,7 @@ S operator&(const S& i, const swap_struct_t<T, F> v) {
     return i & v.swap();
 }
 
-template <typename S, typename T, typename F>
-S operator&(const swap_struct_t<T, F> v, const S& i) {
-    return static_cast<S>(v.swap() & i);
-}
-
-// Comparaison
+// Comparison
 template <typename S, typename T, typename F>
 bool operator<(const S& p, const swap_struct_t<T, F> v) {
     return p < v.swap();
@@ -675,17 +631,8 @@ struct AddEndian<T, SwapTag> {
 };
 
 // Alias LETag/BETag as KeepTag/SwapTag depending on the system
-#if COMMON_LITTLE_ENDIAN
-
-using LETag = KeepTag;
-using BETag = SwapTag;
-
-#else
-
-using BETag = KeepTag;
-using LETag = SwapTag;
-
-#endif
+using LETag = std::conditional_t<std::endian::native == std::endian::little, KeepTag, SwapTag>;
+using BETag = std::conditional_t<std::endian::native == std::endian::big, KeepTag, SwapTag>;
 
 // Aliases for LE types
 using u16_le = AddEndian<u16, LETag>::type;

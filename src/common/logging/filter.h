@@ -1,15 +1,25 @@
-// Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2014 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstddef>
-#include <string_view>
 #include "common/logging/log.h"
 
-namespace Log {
+namespace Common::Log {
+
+/**
+ * Returns the name of the passed log class as a C-string. Subclasses are separated by periods
+ * instead of underscores as in the enumeration.
+ */
+const char* GetLogClassName(Class log_class);
+
+/**
+ * Returns the name of the passed log level as a C-string.
+ */
+const char* GetLevelName(Level log_level);
 
 /**
  * Implements a log message filter which allows different log classes to have different minimum
@@ -51,4 +61,4 @@ public:
 private:
     std::array<Level, static_cast<std::size_t>(Class::Count)> class_levels;
 };
-} // namespace Log
+} // namespace Common::Log

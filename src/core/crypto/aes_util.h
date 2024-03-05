@@ -1,14 +1,13 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <memory>
+#include <span>
 #include <type_traits>
-#include <vector>
 #include "common/common_types.h"
-#include "core/file_sys/vfs.h"
+#include "core/file_sys/vfs/vfs.h"
 
 namespace Core::Crypto {
 
@@ -32,10 +31,9 @@ class AESCipher {
 
 public:
     AESCipher(Key key, Mode mode);
-
     ~AESCipher();
 
-    void SetIV(std::vector<u8> iv);
+    void SetIV(std::span<const u8> data);
 
     template <typename Source, typename Dest>
     void Transcode(const Source* src, std::size_t size, Dest* dest, Op op) const {

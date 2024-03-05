@@ -1,6 +1,5 @@
-// Copyright 2015 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2015 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
@@ -11,7 +10,6 @@
 
 #include <QCoreApplication>
 #include <QFileInfo>
-#include <QImage>
 #include <QObject>
 #include <QStandardItem>
 #include <QString>
@@ -20,6 +18,7 @@
 #include "common/common_types.h"
 #include "common/logging/log.h"
 #include "common/string_util.h"
+#include "yuzu/play_time_manager.h"
 #include "yuzu/uisettings.h"
 #include "yuzu/util/util.h"
 
@@ -29,7 +28,8 @@ enum class GameListItemType {
     SdmcDir = QStandardItem::UserType + 3,
     UserNandDir = QStandardItem::UserType + 4,
     SysNandDir = QStandardItem::UserType + 5,
-    AddDir = QStandardItem::UserType + 6
+    AddDir = QStandardItem::UserType + 6,
+    Favorites = QStandardItem::UserType + 7,
 };
 
 Q_DECLARE_METATYPE(GameListItemType);
@@ -49,10 +49,10 @@ class GameListItem : public QStandardItem {
 
 public:
     // used to access type from item index
-    static const int TypeRole = Qt::UserRole + 1;
-    static const int SortRole = Qt::UserRole + 2;
+    static constexpr int TypeRole = Qt::UserRole + 1;
+    static constexpr int SortRole = Qt::UserRole + 2;
     GameListItem() = default;
-    GameListItem(const QString& string) : QStandardItem(string) {
+    explicit GameListItem(const QString& string) : QStandardItem(string) {
         setData(string, SortRole);
     }
 };
@@ -65,10 +65,10 @@ public:
  */
 class GameListItemPath : public GameListItem {
 public:
-    static const int TitleRole = SortRole;
-    static const int FullPathRole = SortRole + 1;
-    static const int ProgramIdRole = SortRole + 2;
-    static const int FileTypeRole = SortRole + 3;
+    static constexpr int TitleRole = SortRole + 1;
+    static constexpr int FullPathRole = SortRole + 2;
+    static constexpr int ProgramIdRole = SortRole + 3;
+    static constexpr int FileTypeRole = SortRole + 4;
 
     GameListItemPath() = default;
     GameListItemPath(const QString& game_path, const std::vector<u8>& picture_data,
@@ -79,7 +79,7 @@ public:
         setData(qulonglong(program_id), ProgramIdRole);
         setData(game_type, FileTypeRole);
 
-        const u32 size = UISettings::values.icon_size;
+        const u32 size = UISettings::values.game_icon_size.GetValue();
 
         QPixmap picture;
         if (!picture.loadFromData(picture_data.data(), static_cast<u32>(picture_data.size()))) {
@@ -95,7 +95,7 @@ public:
     }
 
     QVariant data(int role) const override {
-        if (role == Qt::DisplayRole) {
+        if (role == Qt::DisplayRole || role == SortRole) {
             std::string filename;
             Common::SplitPath(data(FullPathRole).toString().toStdString(), nullptr, &filename,
                               nullptr);
@@ -107,15 +107,25 @@ public:
                 data(TitleRole).toString(),
             }};
 
-            const auto& row1 = row_data.at(UISettings::values.row_1_text_id);
-            const auto& row2 = row_data.at(UISettings::values.row_2_text_id);
+            const auto& row1 = row_data.at(UISettings::values.row_1_text_id.GetValue());
+            const int row2_id = UISettings::values.row_2_text_id.GetValue();
 
-            if (row1.isEmpty() || row1 == row2)
-                return row2;
-            if (row2.isEmpty())
+            if (role == SortRole) {
+                return row1.toLower();
+            }
+
+            // None
+            if (row2_id == 4) {
                 return row1;
+            }
 
-            return QString(row1 + QStringLiteral("\n    ") + row2);
+            const auto& row2 = row_data.at(row2_id);
+
+            if (row1 == row2) {
+                return row1;
+            }
+
+            return QStringLiteral("%1\n    %2").arg(row1, row2);
         }
 
         return GameListItem::data(role);
@@ -125,7 +135,7 @@ public:
 class GameListItemCompat : public GameListItem {
     Q_DECLARE_TR_FUNCTIONS(GameListItemCompat)
 public:
-    static const int CompatNumberRole = SortRole;
+    static constexpr int CompatNumberRole = SortRole;
     GameListItemCompat() = default;
     explicit GameListItemCompat(const QString& compatibility) {
         setData(type(), TypeRole);
@@ -136,12 +146,14 @@ public:
             const char* tooltip;
         };
         // clang-format off
+        const auto ingame_status =
+                       CompatStatus{QStringLiteral("#f2d624"), QT_TR_NOOP("Ingame"),     QT_TR_NOOP("Game starts, but crashes or major glitches prevent it from being completed.")};
         static const std::map<QString, CompatStatus> status_data = {
-            {QStringLiteral("0"),  {QStringLiteral("#5c93ed"), QT_TR_NOOP("Perfect"),    QT_TR_NOOP("Game functions flawless with no audio or graphical glitches, all tested functionality works as intended without\nany workarounds needed.")}},
-            {QStringLiteral("1"),  {QStringLiteral("#47d35c"), QT_TR_NOOP("Great"),      QT_TR_NOOP("Game functions with minor graphical or audio glitches and is playable from start to finish. May require some\nworkarounds.")}},
-            {QStringLiteral("2"),  {QStringLiteral("#94b242"), QT_TR_NOOP("Okay"),       QT_TR_NOOP("Game functions with major graphical or audio glitches, but game is playable from start to finish with\nworkarounds.")}},
-            {QStringLiteral("3"),  {QStringLiteral("#f2d624"), QT_TR_NOOP("Bad"),        QT_TR_NOOP("Game functions, but with major graphical or audio glitches. Unable to progress in specific areas due to glitches\neven with workarounds.")}},
-            {QStringLiteral("4"),  {QStringLiteral("#FF0000"), QT_TR_NOOP("Intro/Menu"), QT_TR_NOOP("Game is completely unplayable due to major graphical or audio glitches. Unable to progress past the Start\nScreen.")}},
+            {QStringLiteral("0"),  {QStringLiteral("#5c93ed"), QT_TR_NOOP("Perfect"),    QT_TR_NOOP("Game can be played without issues.")}},
+            {QStringLiteral("1"),  {QStringLiteral("#47d35c"), QT_TR_NOOP("Playable"),   QT_TR_NOOP("Game functions with minor graphical or audio glitches and is playable from start to finish.")}},
+            {QStringLiteral("2"),  ingame_status},
+            {QStringLiteral("3"),  ingame_status}, // Fallback for the removed "Okay" category
+            {QStringLiteral("4"),  {QStringLiteral("#FF0000"), QT_TR_NOOP("Intro/Menu"), QT_TR_NOOP("Game loads, but is unable to progress past the Start Screen.")}},
             {QStringLiteral("5"),  {QStringLiteral("#828282"), QT_TR_NOOP("Won't Boot"), QT_TR_NOOP("The game crashes when attempting to startup.")}},
             {QStringLiteral("99"), {QStringLiteral("#000000"), QT_TR_NOOP("Not Tested"), QT_TR_NOOP("The game has not yet been tested.")}},
         };
@@ -154,8 +166,8 @@ public:
         }
         const CompatStatus& status = iterator->second;
         setData(compatibility, CompatNumberRole);
-        setText(QObject::tr(status.text));
-        setToolTip(QObject::tr(status.tooltip));
+        setText(tr(status.text));
+        setToolTip(tr(status.tooltip));
         setData(CreateCirclePixmapFromColor(status.color), Qt::DecorationRole);
     }
 
@@ -164,7 +176,8 @@ public:
     }
 
     bool operator<(const QStandardItem& other) const override {
-        return data(CompatNumberRole) < other.data(CompatNumberRole);
+        return data(CompatNumberRole).value<QString>() <
+               other.data(CompatNumberRole).value<QString>();
     }
 };
 
@@ -175,7 +188,7 @@ public:
  */
 class GameListItemSize : public GameListItem {
 public:
-    static const int SizeRole = SortRole;
+    static constexpr int SizeRole = SortRole;
 
     GameListItemSize() = default;
     explicit GameListItemSize(const qulonglong size_bytes) {
@@ -209,19 +222,44 @@ public:
     }
 };
 
+/**
+ * GameListItem for Play Time values.
+ * This object stores the play time of a game in seconds, and its readable
+ * representation in minutes/hours
+ */
+class GameListItemPlayTime : public GameListItem {
+public:
+    static constexpr int PlayTimeRole = SortRole;
+
+    GameListItemPlayTime() = default;
+    explicit GameListItemPlayTime(const qulonglong time_seconds) {
+        setData(time_seconds, PlayTimeRole);
+    }
+
+    void setData(const QVariant& value, int role) override {
+        qulonglong time_seconds = value.toULongLong();
+        GameListItem::setData(PlayTime::ReadablePlayTime(time_seconds), Qt::DisplayRole);
+        GameListItem::setData(value, PlayTimeRole);
+    }
+
+    bool operator<(const QStandardItem& other) const override {
+        return data(PlayTimeRole).toULongLong() < other.data(PlayTimeRole).toULongLong();
+    }
+};
+
 class GameListDir : public GameListItem {
 public:
-    static const int GameDirRole = Qt::UserRole + 2;
+    static constexpr int GameDirRole = Qt::UserRole + 2;
 
     explicit GameListDir(UISettings::GameDir& directory,
-                         GameListItemType dir_type = GameListItemType::CustomDir)
-        : dir_type{dir_type} {
+                         GameListItemType dir_type_ = GameListItemType::CustomDir)
+        : dir_type{dir_type_} {
         setData(type(), TypeRole);
 
         UISettings::GameDir* game_dir = &directory;
-        setData(QVariant::fromValue(game_dir), GameDirRole);
+        setData(QVariant(UISettings::values.game_dirs.indexOf(directory)), GameDirRole);
 
-        const int icon_size = std::min(static_cast<int>(UISettings::values.icon_size), 64);
+        const int icon_size = UISettings::values.folder_icon_size.GetValue();
         switch (dir_type) {
         case GameListItemType::SdmcDir:
             setData(
@@ -248,13 +286,13 @@ public:
             setData(QObject::tr("System Titles"), Qt::DisplayRole);
             break;
         case GameListItemType::CustomDir: {
-            const QString icon_name = QFileInfo::exists(game_dir->path)
-                                          ? QStringLiteral("folder")
-                                          : QStringLiteral("bad_folder");
+            const QString path = QString::fromStdString(game_dir->path);
+            const QString icon_name =
+                QFileInfo::exists(path) ? QStringLiteral("folder") : QStringLiteral("bad_folder");
             setData(QIcon::fromTheme(icon_name).pixmap(icon_size).scaled(
                         icon_size, icon_size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation),
                     Qt::DecorationRole);
-            setData(game_dir->path, Qt::DisplayRole);
+            setData(path, Qt::DisplayRole);
             break;
         }
         default:
@@ -266,6 +304,13 @@ public:
         return static_cast<int>(dir_type);
     }
 
+    /**
+     * Override to prevent automatic sorting between folders and the addDir button.
+     */
+    bool operator<(const QStandardItem& other) const override {
+        return false;
+    }
+
 private:
     GameListItemType dir_type;
 };
@@ -275,8 +320,9 @@ public:
     explicit GameListAddDir() {
         setData(type(), TypeRole);
 
-        const int icon_size = std::min(static_cast<int>(UISettings::values.icon_size), 64);
-        setData(QIcon::fromTheme(QStringLiteral("plus"))
+        const int icon_size = UISettings::values.folder_icon_size.GetValue();
+
+        setData(QIcon::fromTheme(QStringLiteral("list-add"))
                     .pixmap(icon_size)
                     .scaled(icon_size, icon_size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation),
                 Qt::DecorationRole);
@@ -285,6 +331,33 @@ public:
 
     int type() const override {
         return static_cast<int>(GameListItemType::AddDir);
+    }
+
+    bool operator<(const QStandardItem& other) const override {
+        return false;
+    }
+};
+
+class GameListFavorites : public GameListItem {
+public:
+    explicit GameListFavorites() {
+        setData(type(), TypeRole);
+
+        const int icon_size = UISettings::values.folder_icon_size.GetValue();
+
+        setData(QIcon::fromTheme(QStringLiteral("star"))
+                    .pixmap(icon_size)
+                    .scaled(icon_size, icon_size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation),
+                Qt::DecorationRole);
+        setData(QObject::tr("Favorites"), Qt::DisplayRole);
+    }
+
+    int type() const override {
+        return static_cast<int>(GameListItemType::Favorites);
+    }
+
+    bool operator<(const QStandardItem& other) const override {
+        return false;
     }
 };
 
@@ -301,15 +374,19 @@ class GameListSearchField : public QWidget {
 public:
     explicit GameListSearchField(GameList* parent = nullptr);
 
-    void setFilterResult(int visible, int total);
+    QString filterText() const;
+    void setFilterResult(int visible_, int total_);
 
     void clear();
     void setFocus();
 
 private:
+    void changeEvent(QEvent*) override;
+    void RetranslateUI();
+
     class KeyReleaseEater : public QObject {
     public:
-        explicit KeyReleaseEater(GameList* gamelist);
+        explicit KeyReleaseEater(GameList* gamelist_, QObject* parent = nullptr);
 
     private:
         GameList* gamelist = nullptr;

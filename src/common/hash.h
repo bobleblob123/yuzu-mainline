@@ -1,74 +1,13 @@
-// Copyright 2015 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2015 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <cstddef>
-#include <cstring>
 #include <utility>
 #include <boost/functional/hash.hpp>
-#include "common/cityhash.h"
-#include "common/common_types.h"
 
 namespace Common {
-
-/**
- * Computes a 64-bit hash over the specified block of data
- * @param data Block of data to compute hash over
- * @param len Length of data (in bytes) to compute hash over
- * @returns 64-bit hash value that was computed over the data block
- */
-static inline u64 ComputeHash64(const void* data, std::size_t len) {
-    return CityHash64(static_cast<const char*>(data), len);
-}
-
-/**
- * Computes a 64-bit hash of a struct. In addition to being trivially copyable, it is also critical
- * that either the struct includes no padding, or that any padding is initialized to a known value
- * by memsetting the struct to 0 before filling it in.
- */
-template <typename T>
-static inline u64 ComputeStructHash64(const T& data) {
-    static_assert(std::is_trivially_copyable_v<T>,
-                  "Type passed to ComputeStructHash64 must be trivially copyable");
-    return ComputeHash64(&data, sizeof(data));
-}
-
-/// A helper template that ensures the padding in a struct is initialized by memsetting to 0.
-template <typename T>
-struct HashableStruct {
-    // In addition to being trivially copyable, T must also have a trivial default constructor,
-    // because any member initialization would be overridden by memset
-    static_assert(std::is_trivial_v<T>, "Type passed to HashableStruct must be trivial");
-    /*
-     * We use a union because "implicitly-defined copy/move constructor for a union X copies the
-     * object representation of X." and "implicitly-defined copy assignment operator for a union X
-     * copies the object representation (3.9) of X." = Bytewise copy instead of memberwise copy.
-     * This is important because the padding bytes are included in the hash and comparison between
-     * objects.
-     */
-    union {
-        T state;
-    };
-
-    HashableStruct() {
-        // Memset structure to zero padding bits, so that they will be deterministic when hashing
-        std::memset(&state, 0, sizeof(T));
-    }
-
-    bool operator==(const HashableStruct<T>& o) const {
-        return std::memcmp(&state, &o.state, sizeof(T)) == 0;
-    };
-
-    bool operator!=(const HashableStruct<T>& o) const {
-        return !(*this == o);
-    };
-
-    std::size_t Hash() const {
-        return Common::ComputeStructHash64(state);
-    }
-};
 
 struct PairHash {
     template <class T1, class T2>
@@ -76,6 +15,13 @@ struct PairHash {
         std::size_t seed = std::hash<T1>()(pair.first);
         boost::hash_combine(seed, std::hash<T2>()(pair.second));
         return seed;
+    }
+};
+
+template <typename T>
+struct IdentityHash {
+    [[nodiscard]] size_t operator()(T value) const noexcept {
+        return static_cast<size_t>(value);
     }
 };
 

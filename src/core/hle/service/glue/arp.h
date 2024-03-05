@@ -1,6 +1,5 @@
-// Copyright 2019 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
@@ -13,29 +12,27 @@ class IRegistrar;
 
 class ARP_R final : public ServiceFramework<ARP_R> {
 public:
-    explicit ARP_R(const Core::System& system, const ARPManager& manager);
+    explicit ARP_R(Core::System& system_, const ARPManager& manager_);
     ~ARP_R() override;
 
 private:
-    void GetApplicationLaunchProperty(Kernel::HLERequestContext& ctx);
-    void GetApplicationLaunchPropertyWithApplicationId(Kernel::HLERequestContext& ctx);
-    void GetApplicationControlProperty(Kernel::HLERequestContext& ctx);
-    void GetApplicationControlPropertyWithApplicationId(Kernel::HLERequestContext& ctx);
+    void GetApplicationLaunchProperty(HLERequestContext& ctx);
+    void GetApplicationLaunchPropertyWithApplicationId(HLERequestContext& ctx);
+    void GetApplicationControlProperty(HLERequestContext& ctx);
+    void GetApplicationControlPropertyWithApplicationId(HLERequestContext& ctx);
 
-    const Core::System& system;
     const ARPManager& manager;
 };
 
 class ARP_W final : public ServiceFramework<ARP_W> {
 public:
-    explicit ARP_W(const Core::System& system, ARPManager& manager);
+    explicit ARP_W(Core::System& system_, ARPManager& manager_);
     ~ARP_W() override;
 
 private:
-    void AcquireRegistrar(Kernel::HLERequestContext& ctx);
-    void DeleteProperties(Kernel::HLERequestContext& ctx);
+    void AcquireRegistrar(HLERequestContext& ctx);
+    void UnregisterApplicationInstance(HLERequestContext& ctx);
 
-    const Core::System& system;
     ARPManager& manager;
     std::shared_ptr<IRegistrar> registrar;
 };

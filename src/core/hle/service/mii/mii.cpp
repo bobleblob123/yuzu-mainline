@@ -1,405 +1,332 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <memory>
 
-#include <fmt/ostream.h>
-
 #include "common/logging/log.h"
-#include "common/string_util.h"
-#include "core/hle/ipc_helpers.h"
-#include "core/hle/kernel/hle_ipc.h"
+#include "core/hle/service/cmif_serialization.h"
+#include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/mii/mii.h"
 #include "core/hle/service/mii/mii_manager.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/mii/mii_result.h"
+#include "core/hle/service/mii/types/char_info.h"
+#include "core/hle/service/mii/types/raw_data.h"
+#include "core/hle/service/mii/types/store_data.h"
+#include "core/hle/service/mii/types/ver3_store_data.h"
+#include "core/hle/service/server_manager.h"
+#include "core/hle/service/set/system_settings_server.h"
 #include "core/hle/service/sm/sm.h"
 
 namespace Service::Mii {
 
-constexpr ResultCode ERROR_INVALID_ARGUMENT{ErrorModule::Mii, 1};
-constexpr ResultCode ERROR_CANNOT_FIND_ENTRY{ErrorModule::Mii, 4};
-constexpr ResultCode ERROR_NOT_IN_TEST_MODE{ErrorModule::Mii, 99};
-
 class IDatabaseService final : public ServiceFramework<IDatabaseService> {
 public:
-    explicit IDatabaseService() : ServiceFramework{"IDatabaseService"} {
+    explicit IDatabaseService(Core::System& system_, std::shared_ptr<MiiManager> mii_manager,
+                              bool is_system_)
+        : ServiceFramework{system_, "IDatabaseService"}, manager{mii_manager}, is_system{
+                                                                                   is_system_} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, &IDatabaseService::IsUpdated, "IsUpdated"},
-            {1, &IDatabaseService::IsFullDatabase, "IsFullDatabase"},
-            {2, &IDatabaseService::GetCount, "GetCount"},
-            {3, &IDatabaseService::Get, "Get"},
-            {4, &IDatabaseService::Get1, "Get1"},
-            {5, nullptr, "UpdateLatest"},
-            {6, &IDatabaseService::BuildRandom, "BuildRandom"},
-            {7, &IDatabaseService::BuildDefault, "BuildDefault"},
-            {8, &IDatabaseService::Get2, "Get2"},
-            {9, &IDatabaseService::Get3, "Get3"},
-            {10, nullptr, "UpdateLatest1"},
-            {11, &IDatabaseService::FindIndex, "FindIndex"},
-            {12, &IDatabaseService::Move, "Move"},
-            {13, &IDatabaseService::AddOrReplace, "AddOrReplace"},
-            {14, &IDatabaseService::Delete, "Delete"},
-            {15, &IDatabaseService::DestroyFile, "DestroyFile"},
-            {16, &IDatabaseService::DeleteFile, "DeleteFile"},
-            {17, &IDatabaseService::Format, "Format"},
+            {0, D<&IDatabaseService::IsUpdated>, "IsUpdated"},
+            {1, D<&IDatabaseService::IsFullDatabase>, "IsFullDatabase"},
+            {2, D<&IDatabaseService::GetCount>, "GetCount"},
+            {3, D<&IDatabaseService::Get>, "Get"},
+            {4, D<&IDatabaseService::Get1>, "Get1"},
+            {5, D<&IDatabaseService::UpdateLatest>, "UpdateLatest"},
+            {6, D<&IDatabaseService::BuildRandom>, "BuildRandom"},
+            {7, D<&IDatabaseService::BuildDefault>, "BuildDefault"},
+            {8, D<&IDatabaseService::Get2>, "Get2"},
+            {9, D<&IDatabaseService::Get3>, "Get3"},
+            {10, D<&IDatabaseService::UpdateLatest1>, "UpdateLatest1"},
+            {11, D<&IDatabaseService::FindIndex>, "FindIndex"},
+            {12, D<&IDatabaseService::Move>, "Move"},
+            {13, D<&IDatabaseService::AddOrReplace>, "AddOrReplace"},
+            {14, D<&IDatabaseService::Delete>, "Delete"},
+            {15, D<&IDatabaseService::DestroyFile>, "DestroyFile"},
+            {16, D<&IDatabaseService::DeleteFile>, "DeleteFile"},
+            {17, D<&IDatabaseService::Format>, "Format"},
             {18, nullptr, "Import"},
             {19, nullptr, "Export"},
-            {20, nullptr, "IsBrokenDatabaseWithClearFlag"},
-            {21, &IDatabaseService::GetIndex, "GetIndex"},
-            {22, &IDatabaseService::SetInterfaceVersion, "SetInterfaceVersion"},
-            {23, nullptr, "Convert"},
+            {20, D<&IDatabaseService::IsBrokenDatabaseWithClearFlag>, "IsBrokenDatabaseWithClearFlag"},
+            {21, D<&IDatabaseService::GetIndex>, "GetIndex"},
+            {22, D<&IDatabaseService::SetInterfaceVersion>, "SetInterfaceVersion"},
+            {23, D<&IDatabaseService::Convert>, "Convert"},
+            {24, D<&IDatabaseService::ConvertCoreDataToCharInfo>, "ConvertCoreDataToCharInfo"},
+            {25, D<&IDatabaseService::ConvertCharInfoToCoreData>, "ConvertCharInfoToCoreData"},
+            {26,  D<&IDatabaseService::Append>, "Append"},
         };
         // clang-format on
 
         RegisterHandlers(functions);
+
+        m_set_sys = system.ServiceManager().GetService<Service::Set::ISystemSettingsServer>(
+            "set:sys", true);
+        manager->Initialize(metadata);
     }
 
 private:
-    template <typename OutType>
-    std::vector<u8> SerializeArray(OutType (MiiManager::*getter)(u32) const, u32 offset,
-                                   u32 requested_size, u32& read_size) {
-        read_size = std::min(requested_size, db.Size() - offset);
+    Result IsUpdated(Out<bool> out_is_updated, SourceFlag source_flag) {
+        LOG_DEBUG(Service_Mii, "called with source_flag={}", source_flag);
 
-        std::vector<u8> out(read_size * sizeof(OutType));
+        *out_is_updated = manager->IsUpdated(metadata, source_flag);
 
-        for (u32 i = 0; i < read_size; ++i) {
-            const auto obj = (db.*getter)(offset + i);
-            std::memcpy(out.data() + i * sizeof(OutType), &obj, sizeof(OutType));
-        }
-
-        return out;
+        R_SUCCEED();
     }
 
-    void IsUpdated(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto source{rp.PopRaw<Source>()};
-
-        LOG_DEBUG(Service_Mii, "called with source={}", source);
-
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push(db.CheckUpdatedFlag());
-        db.ResetUpdatedFlag();
-    }
-
-    void IsFullDatabase(Kernel::HLERequestContext& ctx) {
+    Result IsFullDatabase(Out<bool> out_is_full_database) {
         LOG_DEBUG(Service_Mii, "called");
 
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push(db.Full());
+        *out_is_full_database = manager->IsFullDatabase();
+
+        R_SUCCEED();
     }
 
-    void GetCount(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto source{rp.PopRaw<Source>()};
+    Result GetCount(Out<u32> out_mii_count, SourceFlag source_flag) {
+        *out_mii_count = manager->GetCount(metadata, source_flag);
 
-        LOG_DEBUG(Service_Mii, "called with source={}", source);
+        LOG_DEBUG(Service_Mii, "called with source_flag={}, mii_count={}", source_flag,
+                  *out_mii_count);
 
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push<u32>(db.Size());
+        R_SUCCEED();
     }
 
-    // Gets Miis from database at offset and index in format MiiInfoElement
-    void Get(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto size{rp.PopRaw<u32>()};
-        const auto source{rp.PopRaw<Source>()};
+    Result Get(Out<u32> out_mii_count, SourceFlag source_flag,
+               OutArray<CharInfoElement, BufferAttr_HipcMapAlias> char_info_element_buffer) {
+        const auto result =
+            manager->Get(metadata, char_info_element_buffer, *out_mii_count, source_flag);
 
-        LOG_DEBUG(Service_Mii, "called with size={:08X}, offset={:08X}, source={}", size,
-                  offsets[0], source);
+        LOG_INFO(Service_Mii, "called with source_flag={}, mii_count={}", source_flag,
+                 *out_mii_count);
 
-        u32 read_size{};
-        ctx.WriteBuffer(SerializeArray(&MiiManager::GetInfoElement, offsets[0], size, read_size));
-        offsets[0] += read_size;
-
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push<u32>(read_size);
+        R_RETURN(result);
     }
 
-    // Gets Miis from database at offset and index in format MiiInfo
-    void Get1(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto size{rp.PopRaw<u32>()};
-        const auto source{rp.PopRaw<Source>()};
+    Result Get1(Out<u32> out_mii_count, SourceFlag source_flag,
+                OutArray<CharInfo, BufferAttr_HipcMapAlias> char_info_buffer) {
+        const auto result = manager->Get(metadata, char_info_buffer, *out_mii_count, source_flag);
 
-        LOG_DEBUG(Service_Mii, "called with size={:08X}, offset={:08X}, source={}", size,
-                  offsets[1], source);
+        LOG_INFO(Service_Mii, "called with source_flag={}, mii_count={}", source_flag,
+                 *out_mii_count);
 
-        u32 read_size{};
-        ctx.WriteBuffer(SerializeArray(&MiiManager::GetInfo, offsets[1], size, read_size));
-        offsets[1] += read_size;
-
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push<u32>(read_size);
+        R_RETURN(result);
     }
 
-    void BuildRandom(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto [unknown1, unknown2, unknown3] = rp.PopRaw<RandomParameters>();
+    Result UpdateLatest(Out<CharInfo> out_char_info, const CharInfo& char_info,
+                        SourceFlag source_flag) {
+        LOG_INFO(Service_Mii, "called with source_flag={}", source_flag);
 
-        if (unknown1 > 3) {
-            IPC::ResponseBuilder rb{ctx, 2};
-            rb.Push(ERROR_INVALID_ARGUMENT);
-            LOG_ERROR(Service_Mii, "Invalid unknown1 value: {}", unknown1);
-            return;
-        }
-
-        if (unknown2 > 2) {
-            IPC::ResponseBuilder rb{ctx, 2};
-            rb.Push(ERROR_INVALID_ARGUMENT);
-            LOG_ERROR(Service_Mii, "Invalid unknown2 value: {}", unknown2);
-            return;
-        }
-
-        if (unknown3 > 3) {
-            IPC::ResponseBuilder rb{ctx, 2};
-            rb.Push(ERROR_INVALID_ARGUMENT);
-            LOG_ERROR(Service_Mii, "Invalid unknown3 value: {}", unknown3);
-            return;
-        }
-
-        LOG_DEBUG(Service_Mii, "called with param_1={:08X}, param_2={:08X}, param_3={:08X}",
-                  unknown1, unknown2, unknown3);
-
-        const auto info = db.CreateRandom({unknown1, unknown2, unknown3});
-        IPC::ResponseBuilder rb{ctx, 2 + sizeof(MiiInfo) / sizeof(u32)};
-        rb.Push(RESULT_SUCCESS);
-        rb.PushRaw<MiiInfo>(info);
+        R_RETURN(manager->UpdateLatest(metadata, *out_char_info, char_info, source_flag));
     }
 
-    void BuildDefault(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto index{rp.PopRaw<u32>()};
+    Result BuildRandom(Out<CharInfo> out_char_info, Age age, Gender gender, Race race) {
+        LOG_DEBUG(Service_Mii, "called with age={}, gender={}, race={}", age, gender, race);
 
-        if (index > 5) {
-            LOG_ERROR(Service_Mii, "invalid argument, index cannot be greater than 5 but is {:08X}",
-                      index);
-            IPC::ResponseBuilder rb{ctx, 2};
-            rb.Push(ERROR_INVALID_ARGUMENT);
-            return;
-        }
+        R_UNLESS(age <= Age::All, ResultInvalidArgument);
+        R_UNLESS(gender <= Gender::All, ResultInvalidArgument);
+        R_UNLESS(race <= Race::All, ResultInvalidArgument);
 
-        LOG_DEBUG(Service_Mii, "called with index={:08X}", index);
+        manager->BuildRandom(*out_char_info, age, gender, race);
 
-        const auto info = db.CreateDefault(index);
-        IPC::ResponseBuilder rb{ctx, 2 + sizeof(MiiInfo) / sizeof(u32)};
-        rb.Push(RESULT_SUCCESS);
-        rb.PushRaw<MiiInfo>(info);
+        R_SUCCEED();
     }
 
-    // Gets Miis from database at offset and index in format MiiStoreDataElement
-    void Get2(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto size{rp.PopRaw<u32>()};
-        const auto source{rp.PopRaw<Source>()};
+    Result BuildDefault(Out<CharInfo> out_char_info, s32 index) {
+        LOG_DEBUG(Service_Mii, "called with index={}", index);
+        R_UNLESS(index < static_cast<s32>(RawData::DefaultMii.size()), ResultInvalidArgument);
 
-        LOG_DEBUG(Service_Mii, "called with size={:08X}, offset={:08X}, source={}", size,
-                  offsets[2], source);
+        manager->BuildDefault(*out_char_info, index);
 
-        u32 read_size{};
-        ctx.WriteBuffer(
-            SerializeArray(&MiiManager::GetStoreDataElement, offsets[2], size, read_size));
-        offsets[2] += read_size;
-
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push<u32>(read_size);
+        R_SUCCEED();
     }
 
-    // Gets Miis from database at offset and index in format MiiStoreData
-    void Get3(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto size{rp.PopRaw<u32>()};
-        const auto source{rp.PopRaw<Source>()};
+    Result Get2(Out<u32> out_mii_count, SourceFlag source_flag,
+                OutArray<StoreDataElement, BufferAttr_HipcMapAlias> store_data_element_buffer) {
+        const auto result =
+            manager->Get(metadata, store_data_element_buffer, *out_mii_count, source_flag);
 
-        LOG_DEBUG(Service_Mii, "called with size={:08X}, offset={:08X}, source={}", size,
-                  offsets[3], source);
+        LOG_INFO(Service_Mii, "called with source_flag={}, mii_count={}", source_flag,
+                 *out_mii_count);
 
-        u32 read_size{};
-        ctx.WriteBuffer(SerializeArray(&MiiManager::GetStoreData, offsets[3], size, read_size));
-        offsets[3] += read_size;
-
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push<u32>(read_size);
+        R_RETURN(result);
     }
 
-    void FindIndex(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto uuid{rp.PopRaw<Common::UUID>()};
-        const auto unknown{rp.PopRaw<bool>()};
+    Result Get3(Out<u32> out_mii_count, SourceFlag source_flag,
+                OutArray<StoreData, BufferAttr_HipcMapAlias> store_data_buffer) {
+        const auto result = manager->Get(metadata, store_data_buffer, *out_mii_count, source_flag);
 
-        LOG_DEBUG(Service_Mii, "called with uuid={}, unknown={}", uuid.FormatSwitch(), unknown);
+        LOG_INFO(Service_Mii, "called with source_flag={}, mii_count={}", source_flag,
+                 *out_mii_count);
 
-        IPC::ResponseBuilder rb{ctx, 3};
-
-        const auto index = db.IndexOf(uuid);
-        if (index > MAX_MIIS) {
-            // TODO(DarkLordZach): Find a better error code
-            rb.Push(ResultCode(-1));
-            rb.Push(index);
-        } else {
-            rb.Push(RESULT_SUCCESS);
-            rb.Push(index);
-        }
+        R_RETURN(result);
     }
 
-    void Move(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto uuid{rp.PopRaw<Common::UUID>()};
-        const auto index{rp.PopRaw<s32>()};
+    Result UpdateLatest1(Out<StoreData> out_store_data, const StoreData& store_data,
+                         SourceFlag source_flag) {
+        LOG_INFO(Service_Mii, "called with source_flag={}", source_flag);
+        R_UNLESS(is_system, ResultPermissionDenied);
 
-        if (index < 0) {
-            LOG_ERROR(Service_Mii, "Index cannot be negative but is {:08X}!", index);
-            IPC::ResponseBuilder rb{ctx, 2};
-            rb.Push(ERROR_INVALID_ARGUMENT);
-            return;
-        }
-
-        LOG_DEBUG(Service_Mii, "called with uuid={}, index={:08X}", uuid.FormatSwitch(), index);
-
-        const auto success = db.Move(uuid, index);
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        // TODO(DarkLordZach): Find a better error code
-        rb.Push(success ? RESULT_SUCCESS : ResultCode(-1));
+        R_RETURN(manager->UpdateLatest(metadata, *out_store_data, store_data, source_flag));
     }
 
-    void AddOrReplace(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto data{rp.PopRaw<MiiStoreData>()};
+    Result FindIndex(Out<s32> out_index, Common::UUID create_id, bool is_special) {
+        LOG_INFO(Service_Mii, "called with create_id={}, is_special={}",
+                 create_id.FormattedString(), is_special);
 
-        LOG_DEBUG(Service_Mii, "called with Mii data uuid={}, name={}", data.uuid.FormatSwitch(),
-                  Common::UTF16ToUTF8(data.Name()));
+        *out_index = manager->FindIndex(create_id, is_special);
 
-        const auto success = db.AddOrReplace(data);
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        // TODO(DarkLordZach): Find a better error code
-        rb.Push(success ? RESULT_SUCCESS : ResultCode(-1));
+        R_SUCCEED();
     }
 
-    void Delete(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto uuid{rp.PopRaw<Common::UUID>()};
+    Result Move(Common::UUID create_id, s32 new_index) {
+        LOG_INFO(Service_Mii, "called with create_id={}, new_index={}", create_id.FormattedString(),
+                 new_index);
+        R_UNLESS(is_system, ResultPermissionDenied);
 
-        LOG_DEBUG(Service_Mii, "called with uuid={}", uuid.FormatSwitch());
+        const u32 count = manager->GetCount(metadata, SourceFlag::Database);
 
-        const auto success = db.Remove(uuid);
+        R_UNLESS(new_index >= 0 && new_index < static_cast<s32>(count), ResultInvalidArgument);
 
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(success ? RESULT_SUCCESS : ERROR_CANNOT_FIND_ENTRY);
+        R_RETURN(manager->Move(metadata, new_index, create_id));
     }
 
-    void DestroyFile(Kernel::HLERequestContext& ctx) {
+    Result AddOrReplace(const StoreData& store_data) {
+        LOG_INFO(Service_Mii, "called");
+        R_UNLESS(is_system, ResultPermissionDenied);
+
+        const auto result = manager->AddOrReplace(metadata, store_data);
+
+        R_RETURN(result);
+    }
+
+    Result Delete(Common::UUID create_id) {
+        LOG_INFO(Service_Mii, "called, create_id={}", create_id.FormattedString());
+        R_UNLESS(is_system, ResultPermissionDenied);
+
+        R_RETURN(manager->Delete(metadata, create_id));
+    }
+
+    Result DestroyFile() {
+        bool is_db_test_mode_enabled{};
+        m_set_sys->GetSettingsItemValueImpl(is_db_test_mode_enabled, "mii",
+                                            "is_db_test_mode_enabled");
+
+        LOG_INFO(Service_Mii, "called is_db_test_mode_enabled={}", is_db_test_mode_enabled);
+        R_UNLESS(is_db_test_mode_enabled, ResultTestModeOnly);
+
+        R_RETURN(manager->DestroyFile(metadata));
+    }
+
+    Result DeleteFile() {
+        bool is_db_test_mode_enabled{};
+        m_set_sys->GetSettingsItemValueImpl(is_db_test_mode_enabled, "mii",
+                                            "is_db_test_mode_enabled");
+
+        LOG_INFO(Service_Mii, "called is_db_test_mode_enabled={}", is_db_test_mode_enabled);
+        R_UNLESS(is_db_test_mode_enabled, ResultTestModeOnly);
+
+        R_RETURN(manager->DeleteFile());
+    }
+
+    Result Format() {
+        bool is_db_test_mode_enabled{};
+        m_set_sys->GetSettingsItemValueImpl(is_db_test_mode_enabled, "mii",
+                                            "is_db_test_mode_enabled");
+
+        LOG_INFO(Service_Mii, "called is_db_test_mode_enabled={}", is_db_test_mode_enabled);
+        R_UNLESS(is_db_test_mode_enabled, ResultTestModeOnly);
+
+        R_RETURN(manager->Format(metadata));
+    }
+
+    Result IsBrokenDatabaseWithClearFlag(Out<bool> out_is_broken_with_clear_flag) {
+        LOG_DEBUG(Service_Mii, "called");
+        R_UNLESS(is_system, ResultPermissionDenied);
+
+        *out_is_broken_with_clear_flag = manager->IsBrokenWithClearFlag(metadata);
+
+        R_SUCCEED();
+    }
+
+    Result GetIndex(Out<s32> out_index, const CharInfo& char_info) {
         LOG_DEBUG(Service_Mii, "called");
 
-        if (!db.IsTestModeEnabled()) {
-            LOG_ERROR(Service_Mii, "Database is not in test mode -- cannot destory database file.");
-            IPC::ResponseBuilder rb{ctx, 2};
-            rb.Push(ERROR_NOT_IN_TEST_MODE);
-            return;
-        }
-
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push(db.DestroyFile());
+        R_RETURN(manager->GetIndex(metadata, char_info, *out_index));
     }
 
-    void DeleteFile(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_Mii, "called");
+    Result SetInterfaceVersion(u32 interface_version) {
+        LOG_INFO(Service_Mii, "called, interface_version={:08X}", interface_version);
 
-        if (!db.IsTestModeEnabled()) {
-            LOG_ERROR(Service_Mii, "Database is not in test mode -- cannot delete database file.");
-            IPC::ResponseBuilder rb{ctx, 2};
-            rb.Push(ERROR_NOT_IN_TEST_MODE);
-            return;
-        }
+        manager->SetInterfaceVersion(metadata, interface_version);
 
-        IPC::ResponseBuilder rb{ctx, 3};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push(db.DeleteFile());
+        R_SUCCEED();
     }
 
-    void Format(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_Mii, "called");
+    Result Convert(Out<CharInfo> out_char_info, const Ver3StoreData& mii_v3) {
+        LOG_INFO(Service_Mii, "called");
 
-        db.Clear();
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
+        R_RETURN(manager->ConvertV3ToCharInfo(*out_char_info, mii_v3));
     }
 
-    void GetIndex(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto info{rp.PopRaw<MiiInfo>()};
+    Result ConvertCoreDataToCharInfo(Out<CharInfo> out_char_info, const CoreData& core_data) {
+        LOG_INFO(Service_Mii, "called");
 
-        LOG_DEBUG(Service_Mii, "called with Mii info uuid={}, name={}", info.uuid.FormatSwitch(),
-                  Common::UTF16ToUTF8(info.Name()));
-
-        const auto index = db.IndexOf(info);
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
-        rb.Push(index);
+        R_RETURN(manager->ConvertCoreDataToCharInfo(*out_char_info, core_data));
     }
 
-    void SetInterfaceVersion(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        current_interface_version = rp.PopRaw<u32>();
+    Result ConvertCharInfoToCoreData(Out<CoreData> out_core_data, const CharInfo& char_info) {
+        LOG_INFO(Service_Mii, "called");
 
-        LOG_DEBUG(Service_Mii, "called, interface_version={:08X}", current_interface_version);
-
-        UNIMPLEMENTED_IF(current_interface_version != 1);
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
+        R_RETURN(manager->ConvertCharInfoToCoreData(*out_core_data, char_info));
     }
 
-    MiiManager db;
+    Result Append(const CharInfo& char_info) {
+        LOG_INFO(Service_Mii, "called");
 
-    u32 current_interface_version = 0;
+        R_RETURN(manager->Append(metadata, char_info));
+    }
 
-    // Last read offsets of Get functions
-    std::array<u32, 4> offsets{};
+    std::shared_ptr<MiiManager> manager = nullptr;
+    DatabaseSessionMetadata metadata{};
+    bool is_system{};
+
+    std::shared_ptr<Service::Set::ISystemSettingsServer> m_set_sys;
 };
 
-class MiiDBModule final : public ServiceFramework<MiiDBModule> {
+IStaticService::IStaticService(Core::System& system_, const char* name_,
+                               std::shared_ptr<MiiManager> mii_manager, bool is_system_)
+    : ServiceFramework{system_, name_}, manager{mii_manager}, is_system{is_system_} {
+    // clang-format off
+    static const FunctionInfo functions[] = {
+        {0, D<&IStaticService::GetDatabaseService>, "GetDatabaseService"},
+    };
+    // clang-format on
+
+    RegisterHandlers(functions);
+}
+
+IStaticService::~IStaticService() = default;
+
+Result IStaticService::GetDatabaseService(
+    Out<SharedPointer<IDatabaseService>> out_database_service) {
+    LOG_DEBUG(Service_Mii, "called");
+
+    *out_database_service = std::make_shared<IDatabaseService>(system, manager, is_system);
+
+    R_SUCCEED();
+}
+
+std::shared_ptr<MiiManager> IStaticService::GetMiiManager() {
+    return manager;
+}
+
+class IImageDatabaseService final : public ServiceFramework<IImageDatabaseService> {
 public:
-    explicit MiiDBModule(const char* name) : ServiceFramework{name} {
+    explicit IImageDatabaseService(Core::System& system_) : ServiceFramework{system_, "miiimg"} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, &MiiDBModule::GetDatabaseService, "GetDatabaseService"},
-        };
-        // clang-format on
-
-        RegisterHandlers(functions);
-    }
-
-private:
-    void GetDatabaseService(Kernel::HLERequestContext& ctx) {
-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-        rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<IDatabaseService>();
-
-        LOG_DEBUG(Service_Mii, "called");
-    }
-};
-
-class MiiImg final : public ServiceFramework<MiiImg> {
-public:
-    explicit MiiImg() : ServiceFramework{"miiimg"} {
-        // clang-format off
-        static const FunctionInfo functions[] = {
-            {0, nullptr, "Initialize"},
+            {0, D<&IImageDatabaseService::Initialize>, "Initialize"},
             {10, nullptr, "Reload"},
-            {11, nullptr, "GetCount"},
+            {11, D<&IImageDatabaseService::GetCount>, "GetCount"},
             {12, nullptr, "IsEmpty"},
             {13, nullptr, "IsFull"},
             {14, nullptr, "GetAttribute"},
@@ -416,13 +343,33 @@ public:
 
         RegisterHandlers(functions);
     }
+
+private:
+    Result Initialize() {
+        LOG_INFO(Service_Mii, "called");
+
+        R_SUCCEED();
+    }
+
+    Result GetCount(Out<u32> out_count) {
+        LOG_DEBUG(Service_Mii, "called");
+
+        *out_count = 0;
+
+        R_SUCCEED();
+    }
 };
 
-void InstallInterfaces(SM::ServiceManager& sm) {
-    std::make_shared<MiiDBModule>("mii:e")->InstallAsService(sm);
-    std::make_shared<MiiDBModule>("mii:u")->InstallAsService(sm);
+void LoopProcess(Core::System& system) {
+    auto server_manager = std::make_unique<ServerManager>(system);
+    std::shared_ptr<MiiManager> manager = std::make_shared<MiiManager>();
 
-    std::make_shared<MiiImg>()->InstallAsService(sm);
+    server_manager->RegisterNamedService(
+        "mii:e", std::make_shared<IStaticService>(system, "mii:e", manager, true));
+    server_manager->RegisterNamedService(
+        "mii:u", std::make_shared<IStaticService>(system, "mii:u", manager, false));
+    server_manager->RegisterNamedService("miiimg", std::make_shared<IImageDatabaseService>(system));
+    ServerManager::RunServer(std::move(server_manager));
 }
 
 } // namespace Service::Mii

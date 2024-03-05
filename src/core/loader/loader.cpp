@@ -1,16 +1,17 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
-#include "common/file_util.h"
+#include "common/concepts.h"
+#include "common/fs/path_util.h"
 #include "common/logging/log.h"
 #include "common/string_util.h"
-#include "core/hle/kernel/process.h"
+#include "core/core.h"
+#include "core/hle/kernel/k_process.h"
 #include "core/loader/deconstructed_rom_directory.h"
-#include "core/loader/elf.h"
 #include "core/loader/kip.h"
 #include "core/loader/nax.h"
 #include "core/loader/nca.h"
@@ -21,27 +22,39 @@
 
 namespace Loader {
 
+namespace {
+
+template <Common::DerivedFrom<AppLoader> T>
+std::optional<FileType> IdentifyFileLoader(FileSys::VirtualFile file) {
+    const auto file_type = T::IdentifyType(file);
+    if (file_type != FileType::Error) {
+        return file_type;
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
 FileType IdentifyFile(FileSys::VirtualFile file) {
-    FileType type;
-
-#define CHECK_TYPE(loader)                                                                         \
-    type = AppLoader_##loader::IdentifyType(file);                                                 \
-    if (FileType::Error != type)                                                                   \
-        return type;
-
-    CHECK_TYPE(DeconstructedRomDirectory)
-    CHECK_TYPE(ELF)
-    CHECK_TYPE(NSO)
-    CHECK_TYPE(NRO)
-    CHECK_TYPE(NCA)
-    CHECK_TYPE(XCI)
-    CHECK_TYPE(NAX)
-    CHECK_TYPE(NSP)
-    CHECK_TYPE(KIP)
-
-#undef CHECK_TYPE
-
-    return FileType::Unknown;
+    if (const auto romdir_type = IdentifyFileLoader<AppLoader_DeconstructedRomDirectory>(file)) {
+        return *romdir_type;
+    } else if (const auto nso_type = IdentifyFileLoader<AppLoader_NSO>(file)) {
+        return *nso_type;
+    } else if (const auto nro_type = IdentifyFileLoader<AppLoader_NRO>(file)) {
+        return *nro_type;
+    } else if (const auto nca_type = IdentifyFileLoader<AppLoader_NCA>(file)) {
+        return *nca_type;
+    } else if (const auto xci_type = IdentifyFileLoader<AppLoader_XCI>(file)) {
+        return *xci_type;
+    } else if (const auto nax_type = IdentifyFileLoader<AppLoader_NAX>(file)) {
+        return *nax_type;
+    } else if (const auto nsp_type = IdentifyFileLoader<AppLoader_NSP>(file)) {
+        return *nsp_type;
+    } else if (const auto kip_type = IdentifyFileLoader<AppLoader_KIP>(file)) {
+        return *kip_type;
+    } else {
+        return FileType::Unknown;
+    }
 }
 
 FileType GuessFromFilename(const std::string& name) {
@@ -51,10 +64,8 @@ FileType GuessFromFilename(const std::string& name) {
         return FileType::NCA;
 
     const std::string extension =
-        Common::ToLower(std::string(FileUtil::GetExtensionFromFilename(name)));
+        Common::ToLower(std::string(Common::FS::GetExtensionFromFilename(name)));
 
-    if (extension == "elf")
-        return FileType::ELF;
     if (extension == "nro")
         return FileType::NRO;
     if (extension == "nso")
@@ -73,8 +84,6 @@ FileType GuessFromFilename(const std::string& name) {
 
 std::string GetFileTypeString(FileType type) {
     switch (type) {
-    case FileType::ELF:
-        return "ELF";
     case FileType::NRO:
         return "NRO";
     case FileType::NSO:
@@ -99,7 +108,7 @@ std::string GetFileTypeString(FileType type) {
     return "unknown";
 }
 
-constexpr std::array<const char*, 66> RESULT_MESSAGES{
+constexpr std::array<const char*, 68> RESULT_MESSAGES{
     "The operation completed successfully.",
     "The loader requested to load is already loaded.",
     "The operation is not implemented.",
@@ -126,7 +135,7 @@ constexpr std::array<const char*, 66> RESULT_MESSAGES{
     "The titlekey and/or titlekek is incorrect or the section header is invalid.",
     "The XCI file is missing a Program-type NCA.",
     "The NCA file is not an application.",
-    "The ExeFS partition could not be found.",
+    "The Program-type NCA contains no executable. An update may be required.",
     "The XCI file has a bad header.",
     "The XCI file is missing a partition.",
     "The file could not be found or does not exist.",
@@ -160,37 +169,40 @@ constexpr std::array<const char*, 66> RESULT_MESSAGES{
     "The BKTR-type NCA has a bad Subsection block.",
     "The BKTR-type NCA has a bad Relocation bucket.",
     "The BKTR-type NCA has a bad Subsection bucket.",
-    "The BKTR-type NCA is missing the base RomFS.",
+    "Game updates cannot be loaded directly. Load the base game instead.",
     "The NSP or XCI does not contain an update in addition to the base game.",
     "The KIP file has a bad header.",
     "The KIP BLZ decompression of the section failed unexpectedly.",
     "The INI file has a bad header.",
     "The INI file contains more than the maximum allowable number of KIP files.",
+    "Integrity verification could not be performed for this file.",
+    "Integrity verification failed.",
 };
+
+std::string GetResultStatusString(ResultStatus status) {
+    return RESULT_MESSAGES.at(static_cast<std::size_t>(status));
+}
 
 std::ostream& operator<<(std::ostream& os, ResultStatus status) {
     os << RESULT_MESSAGES.at(static_cast<std::size_t>(status));
     return os;
 }
 
-AppLoader::AppLoader(FileSys::VirtualFile file) : file(std::move(file)) {}
+AppLoader::AppLoader(FileSys::VirtualFile file_) : file(std::move(file_)) {}
 AppLoader::~AppLoader() = default;
 
 /**
  * Get a loader for a file with a specific type
- * @param file The file to load
- * @param type The type of the file
- * @param file the file to retrieve the loader for
- * @param type the file type
+ * @param system The system context to use.
+ * @param file   The file to retrieve the loader for
+ * @param type   The file type
+ * @param program_index Specifies the index within the container of the program to launch.
  * @return std::unique_ptr<AppLoader> a pointer to a loader object;  nullptr for unsupported type
  */
-static std::unique_ptr<AppLoader> GetFileLoader(FileSys::VirtualFile file, FileType type) {
+static std::unique_ptr<AppLoader> GetFileLoader(Core::System& system, FileSys::VirtualFile file,
+                                                FileType type, u64 program_id,
+                                                std::size_t program_index) {
     switch (type) {
-
-    // Standard ELF file format.
-    case FileType::ELF:
-        return std::make_unique<AppLoader_ELF>(std::move(file));
-
     // NX NSO file format.
     case FileType::NSO:
         return std::make_unique<AppLoader_NSO>(std::move(file));
@@ -205,7 +217,9 @@ static std::unique_ptr<AppLoader> GetFileLoader(FileSys::VirtualFile file, FileT
 
     // NX XCI (nX Card Image) file format.
     case FileType::XCI:
-        return std::make_unique<AppLoader_XCI>(std::move(file));
+        return std::make_unique<AppLoader_XCI>(std::move(file), system.GetFileSystemController(),
+                                               system.GetContentProvider(), program_id,
+                                               program_index);
 
     // NX NAX (NintendoAesXts) file format.
     case FileType::NAX:
@@ -213,7 +227,9 @@ static std::unique_ptr<AppLoader> GetFileLoader(FileSys::VirtualFile file, FileT
 
     // NX NSP (Nintendo Submission Package) file format
     case FileType::NSP:
-        return std::make_unique<AppLoader_NSP>(std::move(file));
+        return std::make_unique<AppLoader_NSP>(std::move(file), system.GetFileSystemController(),
+                                               system.GetContentProvider(), program_id,
+                                               program_index);
 
     // NX KIP (Kernel Internal Process) file format
     case FileType::KIP:
@@ -228,20 +244,27 @@ static std::unique_ptr<AppLoader> GetFileLoader(FileSys::VirtualFile file, FileT
     }
 }
 
-std::unique_ptr<AppLoader> GetLoader(FileSys::VirtualFile file) {
+std::unique_ptr<AppLoader> GetLoader(Core::System& system, FileSys::VirtualFile file,
+                                     u64 program_id, std::size_t program_index) {
+    if (!file) {
+        return nullptr;
+    }
+
     FileType type = IdentifyFile(file);
-    FileType filename_type = GuessFromFilename(file->GetName());
+    const FileType filename_type = GuessFromFilename(file->GetName());
 
     // Special case: 00 is either a NCA or NAX.
     if (type != filename_type && !(file->GetName() == "00" && type == FileType::NAX)) {
-        LOG_WARNING(Loader, "File {} has a different type than its extension.", file->GetName());
-        if (FileType::Unknown == type)
+        LOG_WARNING(Loader, "File {} has a different type ({}) than its extension.",
+                    file->GetName(), GetFileTypeString(type));
+        if (FileType::Unknown == type) {
             type = filename_type;
+        }
     }
 
     LOG_DEBUG(Loader, "Loading file {} as {}...", file->GetName(), GetFileTypeString(type));
 
-    return GetFileLoader(std::move(file), type);
+    return GetFileLoader(system, std::move(file), type, program_id, program_index);
 }
 
 } // namespace Loader

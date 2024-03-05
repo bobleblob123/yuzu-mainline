@@ -1,6 +1,5 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
 #include <string>
@@ -8,15 +7,14 @@
 #include <fmt/ostream.h>
 
 #include "common/logging/log.h"
+#include "core/crypto/key_manager.h"
 #include "core/file_sys/card_image.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/nca_metadata.h"
 #include "core/file_sys/partition_filesystem.h"
-#include "core/file_sys/romfs.h"
 #include "core/file_sys/submission_package.h"
-#include "core/file_sys/vfs_concat.h"
-#include "core/file_sys/vfs_offset.h"
-#include "core/file_sys/vfs_vector.h"
+#include "core/file_sys/vfs/vfs_offset.h"
+#include "core/file_sys/vfs/vfs_vector.h"
 #include "core/loader/loader.h"
 
 namespace FileSys {
@@ -29,16 +27,13 @@ constexpr std::array partition_names{
     "logo",
 };
 
-XCI::XCI(VirtualFile file_)
+XCI::XCI(VirtualFile file_, u64 program_id, size_t program_index)
     : file(std::move(file_)), program_nca_status{Loader::ResultStatus::ErrorXCIMissingProgramNCA},
-      partitions(partition_names.size()), partitions_raw(partition_names.size()) {
-    if (file->ReadObject(&header) != sizeof(GamecardHeader)) {
-        status = Loader::ResultStatus::ErrorBadXCIHeader;
-        return;
-    }
-
-    if (header.magic != Common::MakeMagic('H', 'E', 'A', 'D')) {
-        status = Loader::ResultStatus::ErrorBadXCIHeader;
+      partitions(partition_names.size()),
+      partitions_raw(partition_names.size()), keys{Core::Crypto::KeyManager::Instance()} {
+    const auto header_status = TryReadHeader();
+    if (header_status != Loader::ResultStatus::Success) {
+        status = header_status;
         return;
     }
 
@@ -61,12 +56,13 @@ XCI::XCI(VirtualFile file_)
     }
 
     secure_partition = std::make_shared<NSP>(
-        main_hfs.GetFile(partition_names[static_cast<std::size_t>(XCIPartition::Secure)]));
+        main_hfs.GetFile(partition_names[static_cast<std::size_t>(XCIPartition::Secure)]),
+        program_id, program_index);
 
     ncas = secure_partition->GetNCAsCollapsed();
     program =
         secure_partition->GetNCA(secure_partition->GetProgramTitleID(), ContentRecordType::Program);
-    program_nca_status = secure_partition->GetProgramStatus(secure_partition->GetProgramTitleID());
+    program_nca_status = secure_partition->GetProgramStatus();
     if (program_nca_status == Loader::ResultStatus::ErrorNSPMissingProgramNCA) {
         program_nca_status = Loader::ResultStatus::ErrorXCIMissingProgramNCA;
     }
@@ -172,28 +168,36 @@ u64 XCI::GetProgramTitleID() const {
     return secure_partition->GetProgramTitleID();
 }
 
+std::vector<u64> XCI::GetProgramTitleIDs() const {
+    return secure_partition->GetProgramTitleIDs();
+}
+
 u32 XCI::GetSystemUpdateVersion() {
     const auto update = GetPartition(XCIPartition::Update);
-    if (update == nullptr)
+    if (update == nullptr) {
         return 0;
+    }
 
-    for (const auto& file : update->GetFiles()) {
-        NCA nca{file, nullptr, 0, keys};
+    for (const auto& update_file : update->GetFiles()) {
+        NCA nca{update_file};
 
-        if (nca.GetStatus() != Loader::ResultStatus::Success)
+        if (nca.GetStatus() != Loader::ResultStatus::Success || nca.GetSubdirectories().empty()) {
             continue;
+        }
 
         if (nca.GetType() == NCAContentType::Meta && nca.GetTitleId() == 0x0100000000000816) {
             const auto dir = nca.GetSubdirectories()[0];
             const auto cnmt = dir->GetFile("SystemUpdate_0100000000000816.cnmt");
-            if (cnmt == nullptr)
+            if (cnmt == nullptr) {
                 continue;
+            }
 
             CNMT cnmt_data{cnmt};
 
             const auto metas = cnmt_data.GetMetaRecords();
-            if (metas.empty())
+            if (metas.empty()) {
                 continue;
+            }
 
             return metas[0].title_version;
         }
@@ -223,9 +227,11 @@ const std::vector<std::shared_ptr<NCA>>& XCI::GetNCAs() const {
 }
 
 std::shared_ptr<NCA> XCI::GetNCAByType(NCAContentType type) const {
+    const auto program_id = secure_partition->GetProgramTitleID();
     const auto iter =
-        std::find_if(ncas.begin(), ncas.end(),
-                     [type](const std::shared_ptr<NCA>& nca) { return nca->GetType() == type; });
+        std::find_if(ncas.begin(), ncas.end(), [type, program_id](const std::shared_ptr<NCA>& nca) {
+            return nca->GetType() == type && nca->GetTitleId() == program_id;
+        });
     return iter == ncas.end() ? nullptr : *iter;
 }
 
@@ -260,8 +266,8 @@ VirtualDir XCI::ConcatenatedPseudoDirectory() {
         if (part == nullptr)
             continue;
 
-        for (const auto& file : part->GetFiles())
-            out->AddFile(file);
+        for (const auto& part_file : part->GetFiles())
+            out->AddFile(part_file);
     }
 
     return out;
@@ -281,12 +287,12 @@ Loader::ResultStatus XCI::AddNCAFromPartition(XCIPartition part) {
         return Loader::ResultStatus::ErrorXCIMissingPartition;
     }
 
-    for (const VirtualFile& file : partition->GetFiles()) {
-        if (file->GetExtension() != "nca") {
+    for (const VirtualFile& partition_file : partition->GetFiles()) {
+        if (partition_file->GetExtension() != "nca") {
             continue;
         }
 
-        auto nca = std::make_shared<NCA>(file, nullptr, 0, keys);
+        auto nca = std::make_shared<NCA>(partition_file);
         if (nca->IsUpdate()) {
             continue;
         }
@@ -304,6 +310,44 @@ Loader::ResultStatus XCI::AddNCAFromPartition(XCIPartition part) {
     }
 
     return Loader::ResultStatus::Success;
+}
+
+Loader::ResultStatus XCI::TryReadHeader() {
+    constexpr size_t CardInitialDataRegionSize = 0x1000;
+
+    // Define the function we'll use to determine if we read a valid header.
+    const auto ReadCardHeader = [&]() {
+        // Ensure we can read the entire header. If we can't, we can't read the card image.
+        if (file->ReadObject(&header) != sizeof(GamecardHeader)) {
+            return Loader::ResultStatus::ErrorBadXCIHeader;
+        }
+
+        // Ensure the header magic matches. If it doesn't, this isn't a card image header.
+        if (header.magic != Common::MakeMagic('H', 'E', 'A', 'D')) {
+            return Loader::ResultStatus::ErrorBadXCIHeader;
+        }
+
+        // We read a card image header.
+        return Loader::ResultStatus::Success;
+    };
+
+    // Try to read the header directly.
+    if (ReadCardHeader() == Loader::ResultStatus::Success) {
+        return Loader::ResultStatus::Success;
+    }
+
+    // Get the size of the file.
+    const size_t card_image_size = file->GetSize();
+
+    // If we are large enough to have a key area, offset past the key area and retry.
+    if (card_image_size >= CardInitialDataRegionSize) {
+        file = std::make_shared<OffsetVfsFile>(file, card_image_size - CardInitialDataRegionSize,
+                                               CardInitialDataRegionSize);
+        return ReadCardHeader();
+    }
+
+    // We had no header and aren't large enough to have a key area, so this can't be parsed.
+    return Loader::ResultStatus::ErrorBadXCIHeader;
 }
 
 u8 XCI::GetFormatVersion() {

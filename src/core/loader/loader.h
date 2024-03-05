@@ -1,9 +1,9 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
+#include <functional>
 #include <iosfwd>
 #include <memory>
 #include <optional>
@@ -11,9 +11,14 @@
 #include <utility>
 #include <vector>
 
+#include "common/common_funcs.h"
 #include "common/common_types.h"
 #include "core/file_sys/control_metadata.h"
-#include "core/file_sys/vfs.h"
+#include "core/file_sys/vfs/vfs.h"
+
+namespace Core {
+class System;
+}
 
 namespace FileSys {
 class NACP;
@@ -21,7 +26,7 @@ class NACP;
 
 namespace Kernel {
 struct AddressMapping;
-class Process;
+class KProcess;
 } // namespace Kernel
 
 namespace Loader {
@@ -30,7 +35,6 @@ namespace Loader {
 enum class FileType {
     Error,
     Unknown,
-    ELF,
     NSO,
     NRO,
     NCA,
@@ -129,38 +133,57 @@ enum class ResultStatus : u16 {
     ErrorBLZDecompressionFailed,
     ErrorBadINIHeader,
     ErrorINITooManyKIPs,
+    ErrorIntegrityVerificationNotImplemented,
+    ErrorIntegrityVerificationFailed,
 };
 
+std::string GetResultStatusString(ResultStatus status);
 std::ostream& operator<<(std::ostream& os, ResultStatus status);
 
 /// Interface for loading an application
-class AppLoader : NonCopyable {
+class AppLoader {
 public:
+    YUZU_NON_COPYABLE(AppLoader);
+    YUZU_NON_MOVEABLE(AppLoader);
+
     struct LoadParameters {
         s32 main_thread_priority;
         u64 main_thread_stack_size;
     };
     using LoadResult = std::pair<ResultStatus, std::optional<LoadParameters>>;
 
-    explicit AppLoader(FileSys::VirtualFile file);
+    explicit AppLoader(FileSys::VirtualFile file_);
     virtual ~AppLoader();
 
     /**
      * Returns the type of this file
+     *
      * @return FileType corresponding to the loaded file
      */
     virtual FileType GetFileType() const = 0;
 
     /**
      * Load the application and return the created Process instance
+     *
      * @param process The newly created process.
+     * @param system  The system that this process is being loaded under.
+     *
      * @return The status result of the operation.
      */
-    virtual LoadResult Load(Kernel::Process& process) = 0;
+    virtual LoadResult Load(Kernel::KProcess& process, Core::System& system) = 0;
+
+    /**
+     * Try to verify the integrity of the file.
+     */
+    virtual ResultStatus VerifyIntegrity(std::function<bool(size_t, size_t)> progress_callback) {
+        return ResultStatus::ErrorIntegrityVerificationNotImplemented;
+    }
 
     /**
      * Get the code (typically .code section) of the application
-     * @param buffer Reference to buffer to store data
+     *
+     * @param[out] buffer Reference to buffer to store data
+     *
      * @return ResultStatus result of function
      */
     virtual ResultStatus ReadCode(std::vector<u8>& buffer) {
@@ -169,7 +192,9 @@ public:
 
     /**
      * Get the icon (typically icon section) of the application
-     * @param buffer Reference to buffer to store data
+     *
+     * @param[out] buffer Reference to buffer to store data
+     *
      * @return ResultStatus result of function
      */
     virtual ResultStatus ReadIcon(std::vector<u8>& buffer) {
@@ -180,7 +205,9 @@ public:
      * Get the banner (typically banner section) of the application
      * In the context of NX, this is the animation that displays in the bottom right of the screen
      * when a game boots. Stored in GIF format.
-     * @param buffer Reference to buffer to store data
+     *
+     * @param[out] buffer Reference to buffer to store data
+     *
      * @return ResultStatus result of function
      */
     virtual ResultStatus ReadBanner(std::vector<u8>& buffer) {
@@ -191,7 +218,9 @@ public:
      * Get the logo (typically logo section) of the application
      * In the context of NX, this is the static image that displays in the top left of the screen
      * when a game boots. Stored in JPEG format.
-     * @param buffer Reference to buffer to store data
+     *
+     * @param[out] buffer Reference to buffer to store data
+     *
      * @return ResultStatus result of function
      */
     virtual ResultStatus ReadLogo(std::vector<u8>& buffer) {
@@ -200,7 +229,9 @@ public:
 
     /**
      * Get the program id of the application
-     * @param out_program_id Reference to store program id into
+     *
+     * @param[out] out_program_id Reference to store program id into
+     *
      * @return ResultStatus result of function
      */
     virtual ResultStatus ReadProgramId(u64& out_program_id) {
@@ -208,21 +239,36 @@ public:
     }
 
     /**
-     * Get the RomFS of the application
-     * Since the RomFS can be huge, we return a file reference instead of copying to a buffer
-     * @param file The directory containing the RomFS
+     * Get the program ids of the application
+     *
+     * @param[out] out_program_ids Reference to store program ids into
+     *
      * @return ResultStatus result of function
      */
-    virtual ResultStatus ReadRomFS(FileSys::VirtualFile& file) {
+    virtual ResultStatus ReadProgramIds(std::vector<u64>& out_program_ids) {
+        return ResultStatus::ErrorNotImplemented;
+    }
+
+    /**
+     * Get the RomFS of the application
+     * Since the RomFS can be huge, we return a file reference instead of copying to a buffer
+     *
+     * @param[out] out_file The directory containing the RomFS
+     *
+     * @return ResultStatus result of function
+     */
+    virtual ResultStatus ReadRomFS(FileSys::VirtualFile& out_file) {
         return ResultStatus::ErrorNotImplemented;
     }
 
     /**
      * Get the raw update of the application, should it come packed with one
-     * @param file The raw update NCA file (Program-type
+     *
+     * @param[out] out_file The raw update NCA file (Program-type)
+     *
      * @return ResultStatus result of function
      */
-    virtual ResultStatus ReadUpdateRaw(FileSys::VirtualFile& file) {
+    virtual ResultStatus ReadUpdateRaw(FileSys::VirtualFile& out_file) {
         return ResultStatus::ErrorNotImplemented;
     }
 
@@ -230,24 +276,18 @@ public:
      * Get whether or not updates can be applied to the RomFS.
      * By default, this is true, however for formats where it cannot be guaranteed that the RomFS is
      * the base game it should be set to false.
-     * @return bool whether or not updatable.
+     *
+     * @return bool indicating whether or not the RomFS is updatable.
      */
     virtual bool IsRomFSUpdatable() const {
         return true;
     }
 
     /**
-     * Gets the difference between the start of the IVFC header and the start of level 6 (RomFS)
-     * data. Needed for bktr patching.
-     * @return IVFC offset for romfs.
-     */
-    virtual u64 ReadRomFSIVFCOffset() const {
-        return 0;
-    }
-
-    /**
      * Get the title of the application
-     * @param title Reference to store the application title into
+     *
+     * @param[out] title Reference to store the application title into
+     *
      * @return ResultStatus result of function
      */
     virtual ResultStatus ReadTitle(std::string& title) {
@@ -256,7 +296,9 @@ public:
 
     /**
      * Get the control data (CNMT) of the application
-     * @param control Reference to store the application control data into
+     *
+     * @param[out] control Reference to store the application control data into
+     *
      * @return ResultStatus result of function
      */
     virtual ResultStatus ReadControlData(FileSys::NACP& control) {
@@ -265,10 +307,12 @@ public:
 
     /**
      * Get the RomFS of the manual of the application
-     * @param file The raw manual RomFS of the game
+     *
+     * @param[out] out_file The raw manual RomFS of the game
+     *
      * @return ResultStatus result of function
      */
-    virtual ResultStatus ReadManualRomFS(FileSys::VirtualFile& file) {
+    virtual ResultStatus ReadManualRomFS(FileSys::VirtualFile& out_file) {
         return ResultStatus::ErrorNotImplemented;
     }
 
@@ -285,9 +329,14 @@ protected:
 
 /**
  * Identifies a bootable file and return a suitable loader
- * @param file The bootable file
- * @return the best loader for this file
+ *
+ * @param system The system context.
+ * @param file   The bootable file.
+ * @param program_index Specifies the index within the container of the program to launch.
+ *
+ * @return the best loader for this file.
  */
-std::unique_ptr<AppLoader> GetLoader(FileSys::VirtualFile file);
+std::unique_ptr<AppLoader> GetLoader(Core::System& system, FileSys::VirtualFile file,
+                                     u64 program_id = 0, std::size_t program_index = 0);
 
 } // namespace Loader

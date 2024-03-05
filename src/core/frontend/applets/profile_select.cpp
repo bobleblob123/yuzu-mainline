@@ -1,19 +1,20 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/settings.h"
 #include "core/frontend/applets/profile_select.h"
 #include "core/hle/service/acc/profile_manager.h"
-#include "core/settings.h"
 
 namespace Core::Frontend {
 
 ProfileSelectApplet::~ProfileSelectApplet() = default;
 
-void DefaultProfileSelectApplet::SelectProfile(
-    std::function<void(std::optional<Common::UUID>)> callback) const {
+void DefaultProfileSelectApplet::Close() const {}
+
+void DefaultProfileSelectApplet::SelectProfile(SelectProfileCallback callback,
+                                               const ProfileSelectParameters& parameters) const {
     Service::Account::ProfileManager manager;
-    callback(manager.GetUser(Settings::values.current_user).value_or(Common::UUID{}));
+    callback(manager.GetUser(Settings::values.current_user.GetValue()).value_or(Common::UUID{}));
     LOG_INFO(Service_ACC, "called, selecting current user instead of prompting...");
 }
 

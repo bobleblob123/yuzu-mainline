@@ -1,10 +1,12 @@
-// Copyright 2019 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#include <cstring>
 
 #include "common/string_util.h"
 #include "core/file_sys/kernel_executable.h"
-#include "core/file_sys/vfs_offset.h"
+#include "core/file_sys/vfs/vfs_offset.h"
+#include "core/loader/loader.h"
 
 namespace FileSys {
 
@@ -147,7 +149,7 @@ std::vector<u32> KIP::GetKernelCapabilities() const {
 }
 
 s32 KIP::GetMainThreadPriority() const {
-    return header.main_thread_priority;
+    return static_cast<s32>(header.main_thread_priority);
 }
 
 u32 KIP::GetMainThreadStackSize() const {

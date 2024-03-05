@@ -1,59 +1,72 @@
-// Copyright 2018 yuzu Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
-#include <vector>
+#include <span>
+
 #include "common/common_types.h"
 #include "video_core/textures/texture.h"
 
 namespace Tegra::Texture {
 
-// GOBSize constant. Calculated by 64 bytes in x multiplied by 8 y coords, represents
-// an small rect of (64/bytes_per_pixel)X8.
-inline std::size_t GetGOBSizeShift() {
-    return 9;
+constexpr u32 GOB_SIZE_X = 64;
+constexpr u32 GOB_SIZE_Y = 8;
+constexpr u32 GOB_SIZE_Z = 1;
+constexpr u32 GOB_SIZE = GOB_SIZE_X * GOB_SIZE_Y * GOB_SIZE_Z;
+
+constexpr u32 GOB_SIZE_X_SHIFT = 6;
+constexpr u32 GOB_SIZE_Y_SHIFT = 3;
+constexpr u32 GOB_SIZE_Z_SHIFT = 0;
+constexpr u32 GOB_SIZE_SHIFT = GOB_SIZE_X_SHIFT + GOB_SIZE_Y_SHIFT + GOB_SIZE_Z_SHIFT;
+
+constexpr u32 SWIZZLE_X_BITS = 0b100101111;
+constexpr u32 SWIZZLE_Y_BITS = 0b011010000;
+
+using SwizzleTable = std::array<std::array<u32, GOB_SIZE_X>, GOB_SIZE_Y>;
+
+/**
+ * This table represents the internal swizzle of a gob, in format 16 bytes x 2 sector packing.
+ * Calculates the offset of an (x, y) position within a swizzled texture.
+ * Taken from the Tegra X1 Technical Reference Manual. pages 1187-1188
+ */
+constexpr SwizzleTable MakeSwizzleTable() {
+    SwizzleTable table{};
+    for (u32 y = 0; y < table.size(); ++y) {
+        for (u32 x = 0; x < table[0].size(); ++x) {
+            table[y][x] = ((x % 64) / 32) * 256 + ((y % 8) / 2) * 64 + ((x % 32) / 16) * 32 +
+                          (y % 2) * 16 + (x % 16);
+        }
+    }
+    return table;
 }
 
-/// Unswizzles a swizzled texture without changing its format.
-void UnswizzleTexture(u8* unswizzled_data, u8* address, u32 tile_size_x, u32 tile_size_y,
-                      u32 bytes_per_pixel, u32 width, u32 height, u32 depth,
-                      u32 block_height = TICEntry::DefaultBlockHeight,
-                      u32 block_depth = TICEntry::DefaultBlockHeight, u32 width_spacing = 0);
+/// Unswizzles a block linear texture into linear memory.
+void UnswizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel,
+                      u32 width, u32 height, u32 depth, u32 block_height, u32 block_depth,
+                      u32 stride_alignment = 1);
 
-/// Unswizzles a swizzled texture without changing its format.
-std::vector<u8> UnswizzleTexture(u8* address, u32 tile_size_x, u32 tile_size_y, u32 bytes_per_pixel,
-                                 u32 width, u32 height, u32 depth,
-                                 u32 block_height = TICEntry::DefaultBlockHeight,
-                                 u32 block_depth = TICEntry::DefaultBlockHeight,
-                                 u32 width_spacing = 0);
-
-/// Copies texture data from a buffer and performs swizzling/unswizzling as necessary.
-void CopySwizzledData(u32 width, u32 height, u32 depth, u32 bytes_per_pixel,
-                      u32 out_bytes_per_pixel, u8* swizzled_data, u8* unswizzled_data,
-                      bool unswizzle, u32 block_height, u32 block_depth, u32 width_spacing);
-
-/// Decodes an unswizzled texture into a A8R8G8B8 texture.
-std::vector<u8> DecodeTexture(const std::vector<u8>& texture_data, TextureFormat format, u32 width,
-                              u32 height);
+/// Swizzles linear memory into a block linear texture.
+void SwizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel, u32 width,
+                    u32 height, u32 depth, u32 block_height, u32 block_depth,
+                    u32 stride_alignment = 1);
 
 /// This function calculates the correct size of a texture depending if it's tiled or not.
 std::size_t CalculateSize(bool tiled, u32 bytes_per_pixel, u32 width, u32 height, u32 depth,
                           u32 block_height, u32 block_depth);
 
 /// Copies an untiled subrectangle into a tiled surface.
-void SwizzleSubrect(u32 subrect_width, u32 subrect_height, u32 source_pitch, u32 swizzled_width,
-                    u32 bytes_per_pixel, u8* swizzled_data, u8* unswizzled_data, u32 block_height,
-                    u32 offset_x, u32 offset_y);
+void SwizzleSubrect(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel, u32 width,
+                    u32 height, u32 depth, u32 origin_x, u32 origin_y, u32 extent_x, u32 extent_y,
+                    u32 block_height, u32 block_depth, u32 pitch_linear);
 
 /// Copies a tiled subrectangle into a linear surface.
-void UnswizzleSubrect(u32 subrect_width, u32 subrect_height, u32 dest_pitch, u32 swizzled_width,
-                      u32 bytes_per_pixel, u8* swizzled_data, u8* unswizzled_data, u32 block_height,
-                      u32 offset_x, u32 offset_y);
+void UnswizzleSubrect(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel,
+                      u32 width, u32 height, u32 depth, u32 origin_x, u32 origin_y, u32 extent_x,
+                      u32 extent_y, u32 block_height, u32 block_depth, u32 pitch_linear);
 
-void SwizzleKepler(const u32 width, const u32 height, const u32 dst_x, const u32 dst_y,
-                   const u32 block_height, const std::size_t copy_size, const u8* source_data,
-                   u8* swizzle_data);
+/// Obtains the offset of the gob for positions 'dst_x' & 'dst_y'
+u64 GetGOBOffset(u32 width, u32 height, u32 dst_x, u32 dst_y, u32 block_height,
+                 u32 bytes_per_pixel);
 
 } // namespace Tegra::Texture

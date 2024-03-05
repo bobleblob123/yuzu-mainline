@@ -1,6 +1,5 @@
-// Copyright 2016 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2016 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
@@ -32,7 +31,8 @@ enum class CommandType : u32 {
     Control = 5,
     RequestWithContext = 6,
     ControlWithContext = 7,
-    Unspecified,
+    TIPC_Close = 15,
+    TIPC_CommandRegion = 16, // Start of TIPC commands, this is an offset.
 };
 
 struct CommandHeader {
@@ -57,6 +57,20 @@ struct CommandHeader {
         BitField<10, 4, BufferDescriptorCFlag> buf_c_descriptor_flags;
         BitField<31, 1, u32> enable_handle_descriptor;
     };
+
+    bool IsTipc() const {
+        return type.Value() >= CommandType::TIPC_CommandRegion;
+    }
+
+    bool IsCloseCommand() const {
+        switch (type.Value()) {
+        case CommandType::Close:
+        case CommandType::TIPC_Close:
+            return true;
+        default:
+            return false;
+        }
+    }
 };
 static_assert(sizeof(CommandHeader) == 8, "CommandHeader size is incorrect");
 
@@ -146,7 +160,7 @@ static_assert(sizeof(BufferDescriptorC) == 8, "BufferDescriptorC size is incorre
 
 struct DataPayloadHeader {
     u32_le magic;
-    INSERT_PADDING_WORDS(1);
+    INSERT_PADDING_WORDS_NOINIT(1);
 };
 static_assert(sizeof(DataPayloadHeader) == 8, "DataPayloadHeader size is incorrect");
 
@@ -160,7 +174,7 @@ struct DomainMessageHeader {
         // Used when responding to an IPC request, Server -> Client.
         struct {
             u32_le num_objects;
-            INSERT_PADDING_WORDS(3);
+            INSERT_PADDING_WORDS_NOINIT(3);
         };
 
         // Used when performing an IPC request, Client -> Server.
@@ -171,8 +185,10 @@ struct DomainMessageHeader {
                 BitField<16, 16, u32> size;
             };
             u32_le object_id;
-            INSERT_PADDING_WORDS(2);
+            INSERT_PADDING_WORDS_NOINIT(2);
         };
+
+        std::array<u32, 4> raw;
     };
 };
 static_assert(sizeof(DomainMessageHeader) == 16, "DomainMessageHeader size is incorrect");

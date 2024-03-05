@@ -1,12 +1,12 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <memory>
 
-#include "core/file_sys/vfs.h"
+#include "common/common_types.h"
+#include "core/file_sys/vfs/vfs_types.h"
 
 namespace FileSys {
 
@@ -51,7 +51,7 @@ public:
     VirtualDir GetModificationDumpRoot(u64 title_id) const;
 
     VirtualDir OpenPartition(BisPartitionId id) const;
-    VirtualFile OpenPartitionStorage(BisPartitionId id) const;
+    VirtualFile OpenPartitionStorage(BisPartitionId id, VirtualFilesystem file_system) const;
 
     VirtualDir GetImageDirectory() const;
 

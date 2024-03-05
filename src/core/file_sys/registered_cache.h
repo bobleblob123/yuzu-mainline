@@ -1,6 +1,5 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
@@ -12,7 +11,7 @@
 #include <boost/container/flat_map.hpp>
 #include "common/common_types.h"
 #include "core/crypto/key_manager.h"
-#include "core/file_sys/vfs.h"
+#include "core/file_sys/vfs/vfs.h"
 
 namespace FileSys {
 class CNMT;
@@ -25,6 +24,7 @@ enum class NCAContentType : u8;
 enum class TitleType : u8;
 
 struct ContentRecord;
+struct CNMTHeader;
 struct MetaRecord;
 class RegisteredCache;
 
@@ -34,9 +34,11 @@ using VfsCopyFunction = std::function<bool(const VirtualFile&, const VirtualFile
 
 enum class InstallResult {
     Success,
+    OverwriteExisting,
     ErrorAlreadyExists,
     ErrorCopyFailed,
     ErrorMetaFailed,
+    ErrorBaseInstall,
 };
 
 struct ContentProviderEntry {
@@ -66,18 +68,18 @@ public:
     virtual void Refresh() = 0;
 
     virtual bool HasEntry(u64 title_id, ContentRecordType type) const = 0;
-    virtual bool HasEntry(ContentProviderEntry entry) const;
+    bool HasEntry(ContentProviderEntry entry) const;
 
     virtual std::optional<u32> GetEntryVersion(u64 title_id) const = 0;
 
     virtual VirtualFile GetEntryUnparsed(u64 title_id, ContentRecordType type) const = 0;
-    virtual VirtualFile GetEntryUnparsed(ContentProviderEntry entry) const;
+    VirtualFile GetEntryUnparsed(ContentProviderEntry entry) const;
 
     virtual VirtualFile GetEntryRaw(u64 title_id, ContentRecordType type) const = 0;
-    virtual VirtualFile GetEntryRaw(ContentProviderEntry entry) const;
+    VirtualFile GetEntryRaw(ContentProviderEntry entry) const;
 
     virtual std::unique_ptr<NCA> GetEntry(u64 title_id, ContentRecordType type) const = 0;
-    virtual std::unique_ptr<NCA> GetEntry(ContentProviderEntry entry) const;
+    std::unique_ptr<NCA> GetEntry(ContentProviderEntry entry) const;
 
     virtual std::vector<ContentProviderEntry> ListEntries() const;
 
@@ -88,7 +90,7 @@ public:
 
 protected:
     // A single instance of KeyManager to be used by GetEntry()
-    Core::Crypto::KeyManager keys;
+    Core::Crypto::KeyManager& keys = Core::Crypto::KeyManager::Instance();
 };
 
 class PlaceholderCache {
@@ -132,9 +134,9 @@ public:
     // Parsing function defines the conversion from raw file to NCA. If there are other steps
     // besides creating the NCA from the file (e.g. NAX0 on SD Card), that should go in a custom
     // parsing function.
-    explicit RegisteredCache(VirtualDir dir,
-                             ContentProviderParsingFunction parsing_function =
-                                 [](const VirtualFile& file, const NcaID& id) { return file; });
+    explicit RegisteredCache(
+        VirtualDir dir, ContentProviderParsingFunction parsing_function =
+                            [](const VirtualFile& file, const NcaID& id) { return file; });
     ~RegisteredCache() override;
 
     void Refresh() override;
@@ -161,12 +163,19 @@ public:
     InstallResult InstallEntry(const NSP& nsp, bool overwrite_if_exists = false,
                                const VfsCopyFunction& copy = &VfsRawCopy);
 
-    // Due to the fact that we must use Meta-type NCAs to determine the existance of files, this
+    // Due to the fact that we must use Meta-type NCAs to determine the existence of files, this
     // poses quite a challenge. Instead of creating a new meta NCA for this file, yuzu will create a
     // dir inside the NAND called 'yuzu_meta' and store the raw CNMT there.
     // TODO(DarkLordZach): Author real meta-type NCAs and install those.
     InstallResult InstallEntry(const NCA& nca, TitleType type, bool overwrite_if_exists = false,
                                const VfsCopyFunction& copy = &VfsRawCopy);
+
+    InstallResult InstallEntry(const NCA& nca, const CNMTHeader& base_header,
+                               const ContentRecord& base_record, bool overwrite_if_exists = false,
+                               const VfsCopyFunction& copy = &VfsRawCopy);
+
+    // Removes an existing entry based on title id
+    bool RemoveExistingEntry(u64 title_id) const;
 
 private:
     template <typename T>
@@ -178,7 +187,7 @@ private:
     void AccumulateYuzuMeta();
     std::optional<NcaID> GetNcaIDFromMetadata(u64 title_id, ContentRecordType type) const;
     VirtualFile GetFileAtID(NcaID id) const;
-    VirtualFile OpenFileOrDirectoryConcat(const VirtualDir& dir, std::string_view path) const;
+    VirtualFile OpenFileOrDirectoryConcat(const VirtualDir& open_dir, std::string_view path) const;
     InstallResult RawInstallNCA(const NCA& nca, const VfsCopyFunction& copy,
                                 bool overwrite_if_exists, std::optional<NcaID> override_id = {});
     bool RawInstallYuzuMeta(const CNMT& cnmt);

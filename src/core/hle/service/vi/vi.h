@@ -1,54 +1,16 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
-#include <memory>
-#include "common/common_types.h"
+#include "common/polyfill_thread.h"
 
-namespace Kernel {
-class HLERequestContext;
-}
-
-namespace Service::NVFlinger {
-class NVFlinger;
-}
-
-namespace Service::SM {
-class ServiceManager;
+namespace Core {
+class System;
 }
 
 namespace Service::VI {
 
-enum class DisplayResolution : u32 {
-    DockedWidth = 1920,
-    DockedHeight = 1080,
-    UndockedWidth = 1280,
-    UndockedHeight = 720,
-};
-
-/// Permission level for a particular VI service instance
-enum class Permission {
-    User,
-    System,
-    Manager,
-};
-
-/// A policy type that may be requested via GetDisplayService and
-/// GetDisplayServiceWithProxyNameExchange
-enum class Policy {
-    User,
-    Compositor,
-};
-
-namespace detail {
-void GetDisplayServiceImpl(Kernel::HLERequestContext& ctx,
-                           std::shared_ptr<NVFlinger::NVFlinger> nv_flinger, Permission permission);
-} // namespace detail
-
-/// Registers all VI services with the specified service manager.
-void InstallInterfaces(SM::ServiceManager& service_manager,
-                       std::shared_ptr<NVFlinger::NVFlinger> nv_flinger);
+void LoopProcess(Core::System& system, std::stop_token token);
 
 } // namespace Service::VI

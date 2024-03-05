@@ -1,18 +1,17 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <memory>
 
 #include "core/hle/service/pcie/pcie.h"
+#include "core/hle/service/server_manager.h"
 #include "core/hle/service/service.h"
-#include "core/hle/service/sm/sm.h"
 
 namespace Service::PCIe {
 
 class ISession final : public ServiceFramework<ISession> {
 public:
-    explicit ISession() : ServiceFramework{"ISession"} {
+    explicit ISession(Core::System& system_) : ServiceFramework{system_, "ISession"} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, nullptr, "QueryFunctions"},
@@ -36,6 +35,9 @@ public:
             {18, nullptr, "ReleaseIrq"},
             {19, nullptr, "SetIrqEnable"},
             {20, nullptr, "SetAspmEnable"},
+            {21, nullptr, "SetResetUponResumeEnable"},
+            {22, nullptr, "ResetFunction"},
+            {23, nullptr, "Unknown23"},
         };
         // clang-format on
 
@@ -45,7 +47,7 @@ public:
 
 class PCIe final : public ServiceFramework<PCIe> {
 public:
-    explicit PCIe() : ServiceFramework{"pcie"} {
+    explicit PCIe(Core::System& system_) : ServiceFramework{system_, "pcie"} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, nullptr, "RegisterClassDriver"},
@@ -57,8 +59,11 @@ public:
     }
 };
 
-void InstallInterfaces(SM::ServiceManager& sm) {
-    std::make_shared<PCIe>()->InstallAsService(sm);
+void LoopProcess(Core::System& system) {
+    auto server_manager = std::make_unique<ServerManager>(system);
+
+    server_manager->RegisterNamedService("pcie", std::make_shared<PCIe>(system));
+    ServerManager::RunServer(std::move(server_manager));
 }
 
 } // namespace Service::PCIe

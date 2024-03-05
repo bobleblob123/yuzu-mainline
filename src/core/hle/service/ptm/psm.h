@@ -1,15 +1,31 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
-namespace Service::SM {
-class ServiceManager;
-}
+#include "core/hle/service/service.h"
 
-namespace Service::PSM {
+namespace Service::PTM {
 
-void InstallInterfaces(SM::ServiceManager& sm);
+class PSM final : public ServiceFramework<PSM> {
+public:
+    explicit PSM(Core::System& system_);
+    ~PSM() override;
 
-} // namespace Service::PSM
+private:
+    enum class ChargerType : u32 {
+        Unplugged = 0,
+        RegularCharger = 1,
+        LowPowerCharger = 2,
+        Unknown = 3,
+    };
+
+    void GetBatteryChargePercentage(HLERequestContext& ctx);
+    void GetChargerType(HLERequestContext& ctx);
+    void OpenSession(HLERequestContext& ctx);
+
+    u32 battery_charge_percentage{100};
+    ChargerType charger_type{ChargerType::RegularCharger};
+};
+
+} // namespace Service::PTM

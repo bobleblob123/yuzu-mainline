@@ -1,6 +1,5 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -8,21 +7,21 @@
 
 namespace Service::Nvidia {
 
-NVMEMP::NVMEMP() : ServiceFramework("nvmemp") {
+NVMEMP::NVMEMP(Core::System& system_) : ServiceFramework{system_, "nvmemp"} {
     static const FunctionInfo functions[] = {
-        {0, &NVMEMP::Cmd0, "Cmd0"},
-        {1, &NVMEMP::Cmd1, "Cmd1"},
+        {0, &NVMEMP::Open, "Open"},
+        {1, &NVMEMP::GetAruid, "GetAruid"},
     };
     RegisterHandlers(functions);
 }
 
 NVMEMP::~NVMEMP() = default;
 
-void NVMEMP::Cmd0(Kernel::HLERequestContext& ctx) {
+void NVMEMP::Open(HLERequestContext& ctx) {
     UNIMPLEMENTED();
 }
 
-void NVMEMP::Cmd1(Kernel::HLERequestContext& ctx) {
+void NVMEMP::GetAruid(HLERequestContext& ctx) {
     UNIMPLEMENTED();
 }
 

@@ -1,6 +1,5 @@
-// Copyright 2015 Citra Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: 2015 Citra Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <QAction>
 #include <QLayout>
@@ -48,10 +47,10 @@ private:
 
 MicroProfileDialog::MicroProfileDialog(QWidget* parent) : QWidget(parent, Qt::Dialog) {
     setObjectName(QStringLiteral("MicroProfile"));
-    setWindowTitle(tr("MicroProfile"));
+    setWindowTitle(tr("&MicroProfile"));
     resize(1000, 600);
-    // Remove the "?" button from the titlebar and enable the maximize button
-    setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint | Qt::WindowMaximizeButtonHint);
+    // Enable the maximize button
+    setWindowFlags(windowFlags() | Qt::WindowMaximizeButtonHint);
 
 #if MICROPROFILE_ENABLED
 
@@ -108,8 +107,7 @@ MicroProfileWidget::MicroProfileWidget(QWidget* parent) : QWidget(parent) {
     MicroProfileSetDisplayMode(1); // Timers screen
     MicroProfileInitUI();
 
-    connect(&update_timer, &QTimer::timeout, this,
-            static_cast<void (MicroProfileWidget::*)()>(&MicroProfileWidget::update));
+    connect(&update_timer, &QTimer::timeout, this, qOverload<>(&MicroProfileWidget::update));
 }
 
 void MicroProfileWidget::paintEvent(QPaintEvent* ev) {
@@ -143,24 +141,29 @@ void MicroProfileWidget::hideEvent(QHideEvent* ev) {
 }
 
 void MicroProfileWidget::mouseMoveEvent(QMouseEvent* ev) {
-    MicroProfileMousePosition(ev->x() / x_scale, ev->y() / y_scale, 0);
+    const auto mouse_position = ev->pos();
+    MicroProfileMousePosition(mouse_position.x() / x_scale, mouse_position.y() / y_scale, 0);
     ev->accept();
 }
 
 void MicroProfileWidget::mousePressEvent(QMouseEvent* ev) {
-    MicroProfileMousePosition(ev->x() / x_scale, ev->y() / y_scale, 0);
+    const auto mouse_position = ev->pos();
+    MicroProfileMousePosition(mouse_position.x() / x_scale, mouse_position.y() / y_scale, 0);
     MicroProfileMouseButton(ev->buttons() & Qt::LeftButton, ev->buttons() & Qt::RightButton);
     ev->accept();
 }
 
 void MicroProfileWidget::mouseReleaseEvent(QMouseEvent* ev) {
-    MicroProfileMousePosition(ev->x() / x_scale, ev->y() / y_scale, 0);
+    const auto mouse_position = ev->pos();
+    MicroProfileMousePosition(mouse_position.x() / x_scale, mouse_position.y() / y_scale, 0);
     MicroProfileMouseButton(ev->buttons() & Qt::LeftButton, ev->buttons() & Qt::RightButton);
     ev->accept();
 }
 
 void MicroProfileWidget::wheelEvent(QWheelEvent* ev) {
-    MicroProfileMousePosition(ev->x() / x_scale, ev->y() / y_scale, ev->delta() / 120);
+    const auto wheel_position = ev->position().toPoint();
+    MicroProfileMousePosition(wheel_position.x() / x_scale, wheel_position.y() / y_scale,
+                              ev->angleDelta().y() / 120);
     ev->accept();
 }
 

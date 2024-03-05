@@ -1,6 +1,5 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
 #include <cstring>
@@ -13,7 +12,7 @@
 #include "common/logging/log.h"
 #include "common/swap.h"
 #include "core/file_sys/ips_layer.h"
-#include "core/file_sys/vfs_vector.h"
+#include "core/file_sys/vfs/vfs_vector.h"
 
 namespace FileSys {
 
@@ -42,12 +41,12 @@ static IPSFileType IdentifyMagic(const std::vector<u8>& magic) {
         return IPSFileType::Error;
     }
 
-    constexpr std::array<u8, 5> patch_magic{{'P', 'A', 'T', 'C', 'H'}};
+    static constexpr std::array<u8, 5> patch_magic{{'P', 'A', 'T', 'C', 'H'}};
     if (std::equal(magic.begin(), magic.end(), patch_magic.begin())) {
         return IPSFileType::IPS;
     }
 
-    constexpr std::array<u8, 5> ips32_magic{{'I', 'P', 'S', '3', '2'}};
+    static constexpr std::array<u8, 5> ips32_magic{{'I', 'P', 'S', '3', '2'}};
     if (std::equal(magic.begin(), magic.end(), ips32_magic.begin())) {
         return IPSFileType::IPS32;
     }
@@ -56,12 +55,12 @@ static IPSFileType IdentifyMagic(const std::vector<u8>& magic) {
 }
 
 static bool IsEOF(IPSFileType type, const std::vector<u8>& data) {
-    constexpr std::array<u8, 3> eof{{'E', 'O', 'F'}};
+    static constexpr std::array<u8, 3> eof{{'E', 'O', 'F'}};
     if (type == IPSFileType::IPS && std::equal(data.begin(), data.end(), eof.begin())) {
         return true;
     }
 
-    constexpr std::array<u8, 4> eeof{{'E', 'E', 'O', 'F'}};
+    static constexpr std::array<u8, 4> eeof{{'E', 'E', 'O', 'F'}};
     return type == IPSFileType::IPS32 && std::equal(data.begin(), data.end(), eeof.begin());
 }
 
@@ -74,6 +73,9 @@ VirtualFile PatchIPS(const VirtualFile& in, const VirtualFile& ips) {
         return nullptr;
 
     auto in_data = in->ReadAllBytes();
+    if (in_data.size() == 0) {
+        return nullptr;
+    }
 
     std::vector<u8> temp(type == IPSFileType::IPS ? 3 : 4);
     u64 offset = 5; // After header
@@ -88,6 +90,10 @@ VirtualFile PatchIPS(const VirtualFile& in, const VirtualFile& ips) {
             real_offset = (temp[0] << 24) | (temp[1] << 16) | (temp[2] << 8) | temp[3];
         else
             real_offset = (temp[0] << 16) | (temp[1] << 8) | temp[2];
+
+        if (real_offset > in_data.size()) {
+            return nullptr;
+        }
 
         u16 data_size{};
         if (ips->ReadObject(&data_size, offset) != sizeof(u16))
@@ -166,7 +172,7 @@ static std::string EscapeStringSequences(std::string in) {
 void IPSwitchCompiler::ParseFlag(const std::string& line) {
     if (StartsWith(line, "@flag offset_shift ")) {
         // Offset Shift Flag
-        offset_shift = std::stoll(line.substr(19), nullptr, 0);
+        offset_shift = std::strtoll(line.substr(19).c_str(), nullptr, 0);
     } else if (StartsWith(line, "@little-endian")) {
         // Set values to read as little endian
         is_little_endian = true;
@@ -218,9 +224,7 @@ void IPSwitchCompiler::Parse() {
             break;
         } else if (StartsWith(line, "@nsobid-")) {
             // NSO Build ID Specifier
-            auto raw_build_id = line.substr(8);
-            if (raw_build_id.size() != 0x40)
-                raw_build_id.resize(0x40, '0');
+            const auto raw_build_id = fmt::format("{:0<64}", line.substr(8));
             nso_build_id = Common::HexStringToArray<0x20>(raw_build_id);
         } else if (StartsWith(line, "#")) {
             // Mandatory Comment
@@ -245,9 +249,11 @@ void IPSwitchCompiler::Parse() {
 
             // Read rest of patch
             while (true) {
-                if (i + 1 >= lines.size())
+                if (i + 1 >= lines.size()) {
                     break;
-                const auto patch_line = lines[++i];
+                }
+
+                const auto& patch_line = lines[++i];
 
                 // Start of new patch
                 if (StartsWith(patch_line, "@enabled") || StartsWith(patch_line, "@disabled")) {
@@ -264,7 +270,7 @@ void IPSwitchCompiler::Parse() {
                 // 11 - 8 hex digit offset + space + minimum two digit overwrite val
                 if (patch_line.length() < 11)
                     break;
-                auto offset = std::stoul(patch_line.substr(0, 8), nullptr, 16);
+                auto offset = std::strtoul(patch_line.substr(0, 8).c_str(), nullptr, 16);
                 offset += static_cast<unsigned long>(offset_shift);
 
                 std::vector<u8> replace;
@@ -286,7 +292,8 @@ void IPSwitchCompiler::Parse() {
                     std::copy(value.begin(), value.end(), std::back_inserter(replace));
                 } else {
                     // hex replacement
-                    const auto value = patch_line.substr(9);
+                    const auto value =
+                        patch_line.substr(9, patch_line.find_first_of(" /\r\n", 9) - 9);
                     replace = Common::HexStringToVector(value, is_little_endian);
                 }
 
@@ -297,7 +304,7 @@ void IPSwitchCompiler::Parse() {
                              patch_text->GetName(), offset, Common::HexToString(replace));
                 }
 
-                patch.records.insert_or_assign(offset, std::move(replace));
+                patch.records.insert_or_assign(static_cast<u32>(offset), std::move(replace));
             }
 
             patches.push_back(std::move(patch));

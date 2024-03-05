@@ -1,35 +1,15 @@
-/*
- * Copyright (c) 2018-2019 Atmosphère-NX
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-
-/*
- * Adapted by DarkLordZach for use/interaction with yuzu
- *
- * Modifications Copyright 2019 yuzu emulator team
- * Licensed under GPLv2 or any later version
- * Refer to the license.txt file included.
- */
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/assert.h"
 #include "common/scope_exit.h"
 #include "core/memory/dmnt_cheat_types.h"
 #include "core/memory/dmnt_cheat_vm.h"
 
-namespace Memory {
+namespace Core::Memory {
 
-DmntCheatVm::DmntCheatVm(std::unique_ptr<Callbacks> callbacks) : callbacks(std::move(callbacks)) {}
+DmntCheatVm::DmntCheatVm(std::unique_ptr<Callbacks> callbacks_)
+    : callbacks(std::move(callbacks_)) {}
 
 DmntCheatVm::~DmntCheatVm() = default;
 
@@ -55,7 +35,7 @@ void DmntCheatVm::LogOpcode(const CheatVmOpcode& opcode) {
             fmt::format("Cond Type: {:X}", static_cast<u32>(begin_cond->cond_type)));
         callbacks->CommandLog(fmt::format("Rel Addr:  {:X}", begin_cond->rel_address));
         callbacks->CommandLog(fmt::format("Value:     {:X}", begin_cond->value.bit64));
-    } else if (auto end_cond = std::get_if<EndConditionalOpcode>(&opcode.opcode)) {
+    } else if (std::holds_alternative<EndConditionalOpcode>(opcode.opcode)) {
         callbacks->CommandLog("Opcode: End Conditional");
     } else if (auto ctrl_loop = std::get_if<ControlLoopOpcode>(&opcode.opcode)) {
         if (ctrl_loop->start_loop) {
@@ -190,6 +170,15 @@ void DmntCheatVm::LogOpcode(const CheatVmOpcode& opcode) {
             callbacks->CommandLog(
                 fmt::format("Act[{:02X}]:   {:d}", i, save_restore_regmask->should_operate[i]));
         }
+    } else if (auto rw_static_reg = std::get_if<ReadWriteStaticRegisterOpcode>(&opcode.opcode)) {
+        callbacks->CommandLog("Opcode: Read/Write Static Register");
+        if (rw_static_reg->static_idx < NumReadableStaticRegisters) {
+            callbacks->CommandLog("Op Type: ReadStaticRegister");
+        } else {
+            callbacks->CommandLog("Op Type: WriteStaticRegister");
+        }
+        callbacks->CommandLog(fmt::format("Reg Idx   {:X}", rw_static_reg->idx));
+        callbacks->CommandLog(fmt::format("Stc Idx   {:X}", rw_static_reg->static_idx));
     } else if (auto debug_log = std::get_if<DebugLogOpcode>(&opcode.opcode)) {
         callbacks->CommandLog("Opcode: Debug Log");
         callbacks->CommandLog(fmt::format("Bit Width: {:X}", debug_log->bit_width));
@@ -235,12 +224,12 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
     // If we've ever seen a decode failure, return false.
     bool valid = decode_success;
     CheatVmOpcode opcode = {};
-    SCOPE_EXIT({
+    SCOPE_EXIT {
         decode_success &= valid;
         if (valid) {
             out = opcode;
         }
-    });
+    };
 
     // Helper function for getting instruction dwords.
     const auto GetNextDword = [&] {
@@ -304,43 +293,48 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
 
     switch (opcode_type) {
     case CheatVmOpcodeType::StoreStatic: {
-        StoreStaticOpcode store_static{};
         // 0TMR00AA AAAAAAAA YYYYYYYY (YYYYYYYY)
         // Read additional words.
         const u32 second_dword = GetNextDword();
-        store_static.bit_width = (first_dword >> 24) & 0xF;
-        store_static.mem_type = static_cast<MemoryAccessType>((first_dword >> 20) & 0xF);
-        store_static.offset_register = ((first_dword >> 16) & 0xF);
-        store_static.rel_address =
-            (static_cast<u64>(first_dword & 0xFF) << 32ul) | static_cast<u64>(second_dword);
-        store_static.value = GetNextVmInt(store_static.bit_width);
-        opcode.opcode = store_static;
+        const u32 bit_width = (first_dword >> 24) & 0xF;
+
+        opcode.opcode = StoreStaticOpcode{
+            .bit_width = bit_width,
+            .mem_type = static_cast<MemoryAccessType>((first_dword >> 20) & 0xF),
+            .offset_register = (first_dword >> 16) & 0xF,
+            .rel_address = (static_cast<u64>(first_dword & 0xFF) << 32) | second_dword,
+            .value = GetNextVmInt(bit_width),
+        };
     } break;
     case CheatVmOpcodeType::BeginConditionalBlock: {
-        BeginConditionalOpcode begin_cond{};
         // 1TMC00AA AAAAAAAA YYYYYYYY (YYYYYYYY)
         // Read additional words.
         const u32 second_dword = GetNextDword();
-        begin_cond.bit_width = (first_dword >> 24) & 0xF;
-        begin_cond.mem_type = static_cast<MemoryAccessType>((first_dword >> 20) & 0xF);
-        begin_cond.cond_type = static_cast<ConditionalComparisonType>((first_dword >> 16) & 0xF);
-        begin_cond.rel_address =
-            (static_cast<u64>(first_dword & 0xFF) << 32ul) | static_cast<u64>(second_dword);
-        begin_cond.value = GetNextVmInt(begin_cond.bit_width);
-        opcode.opcode = begin_cond;
+        const u32 bit_width = (first_dword >> 24) & 0xF;
+
+        opcode.opcode = BeginConditionalOpcode{
+            .bit_width = bit_width,
+            .mem_type = static_cast<MemoryAccessType>((first_dword >> 20) & 0xF),
+            .cond_type = static_cast<ConditionalComparisonType>((first_dword >> 16) & 0xF),
+            .rel_address = (static_cast<u64>(first_dword & 0xFF) << 32) | second_dword,
+            .value = GetNextVmInt(bit_width),
+        };
     } break;
     case CheatVmOpcodeType::EndConditionalBlock: {
         // 20000000
-        // There's actually nothing left to process here!
-        opcode.opcode = EndConditionalOpcode{};
+        opcode.opcode = EndConditionalOpcode{
+            .is_else = ((first_dword >> 24) & 0xf) == 1,
+        };
     } break;
     case CheatVmOpcodeType::ControlLoop: {
-        ControlLoopOpcode ctrl_loop{};
         // 300R0000 VVVVVVVV
         // 310R0000
         // Parse register, whether loop start or loop end.
-        ctrl_loop.start_loop = ((first_dword >> 24) & 0xF) == 0;
-        ctrl_loop.reg_index = ((first_dword >> 20) & 0xF);
+        ControlLoopOpcode ctrl_loop{
+            .start_loop = ((first_dword >> 24) & 0xF) == 0,
+            .reg_index = (first_dword >> 20) & 0xF,
+            .num_iters = 0,
+        };
 
         // Read number of iters if loop start.
         if (ctrl_loop.start_loop) {
@@ -349,65 +343,65 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
         opcode.opcode = ctrl_loop;
     } break;
     case CheatVmOpcodeType::LoadRegisterStatic: {
-        LoadRegisterStaticOpcode ldr_static{};
         // 400R0000 VVVVVVVV VVVVVVVV
         // Read additional words.
-        ldr_static.reg_index = ((first_dword >> 16) & 0xF);
-        ldr_static.value =
-            (static_cast<u64>(GetNextDword()) << 32ul) | static_cast<u64>(GetNextDword());
-        opcode.opcode = ldr_static;
+        opcode.opcode = LoadRegisterStaticOpcode{
+            .reg_index = (first_dword >> 16) & 0xF,
+            .value = (static_cast<u64>(GetNextDword()) << 32) | GetNextDword(),
+        };
     } break;
     case CheatVmOpcodeType::LoadRegisterMemory: {
-        LoadRegisterMemoryOpcode ldr_memory{};
         // 5TMRI0AA AAAAAAAA
         // Read additional words.
         const u32 second_dword = GetNextDword();
-        ldr_memory.bit_width = (first_dword >> 24) & 0xF;
-        ldr_memory.mem_type = static_cast<MemoryAccessType>((first_dword >> 20) & 0xF);
-        ldr_memory.reg_index = ((first_dword >> 16) & 0xF);
-        ldr_memory.load_from_reg = ((first_dword >> 12) & 0xF) != 0;
-        ldr_memory.rel_address =
-            (static_cast<u64>(first_dword & 0xFF) << 32ul) | static_cast<u64>(second_dword);
-        opcode.opcode = ldr_memory;
+        opcode.opcode = LoadRegisterMemoryOpcode{
+            .bit_width = (first_dword >> 24) & 0xF,
+            .mem_type = static_cast<MemoryAccessType>((first_dword >> 20) & 0xF),
+            .reg_index = ((first_dword >> 16) & 0xF),
+            .load_from_reg = ((first_dword >> 12) & 0xF) != 0,
+            .rel_address = (static_cast<u64>(first_dword & 0xFF) << 32) | second_dword,
+        };
     } break;
     case CheatVmOpcodeType::StoreStaticToAddress: {
-        StoreStaticToAddressOpcode str_static{};
         // 6T0RIor0 VVVVVVVV VVVVVVVV
         // Read additional words.
-        str_static.bit_width = (first_dword >> 24) & 0xF;
-        str_static.reg_index = ((first_dword >> 16) & 0xF);
-        str_static.increment_reg = ((first_dword >> 12) & 0xF) != 0;
-        str_static.add_offset_reg = ((first_dword >> 8) & 0xF) != 0;
-        str_static.offset_reg_index = ((first_dword >> 4) & 0xF);
-        str_static.value =
-            (static_cast<u64>(GetNextDword()) << 32ul) | static_cast<u64>(GetNextDword());
-        opcode.opcode = str_static;
+        opcode.opcode = StoreStaticToAddressOpcode{
+            .bit_width = (first_dword >> 24) & 0xF,
+            .reg_index = (first_dword >> 16) & 0xF,
+            .increment_reg = ((first_dword >> 12) & 0xF) != 0,
+            .add_offset_reg = ((first_dword >> 8) & 0xF) != 0,
+            .offset_reg_index = (first_dword >> 4) & 0xF,
+            .value = (static_cast<u64>(GetNextDword()) << 32) | GetNextDword(),
+        };
     } break;
     case CheatVmOpcodeType::PerformArithmeticStatic: {
-        PerformArithmeticStaticOpcode perform_math_static{};
         // 7T0RC000 VVVVVVVV
         // Read additional words.
-        perform_math_static.bit_width = (first_dword >> 24) & 0xF;
-        perform_math_static.reg_index = ((first_dword >> 16) & 0xF);
-        perform_math_static.math_type =
-            static_cast<RegisterArithmeticType>((first_dword >> 12) & 0xF);
-        perform_math_static.value = GetNextDword();
-        opcode.opcode = perform_math_static;
+        opcode.opcode = PerformArithmeticStaticOpcode{
+            .bit_width = (first_dword >> 24) & 0xF,
+            .reg_index = ((first_dword >> 16) & 0xF),
+            .math_type = static_cast<RegisterArithmeticType>((first_dword >> 12) & 0xF),
+            .value = GetNextDword(),
+        };
     } break;
     case CheatVmOpcodeType::BeginKeypressConditionalBlock: {
-        BeginKeypressConditionalOpcode begin_keypress_cond{};
         // 8kkkkkkk
         // Just parse the mask.
-        begin_keypress_cond.key_mask = first_dword & 0x0FFFFFFF;
+        opcode.opcode = BeginKeypressConditionalOpcode{
+            .key_mask = first_dword & 0x0FFFFFFF,
+        };
     } break;
     case CheatVmOpcodeType::PerformArithmeticRegister: {
-        PerformArithmeticRegisterOpcode perform_math_reg{};
         // 9TCRSIs0 (VVVVVVVV (VVVVVVVV))
-        perform_math_reg.bit_width = (first_dword >> 24) & 0xF;
-        perform_math_reg.math_type = static_cast<RegisterArithmeticType>((first_dword >> 20) & 0xF);
-        perform_math_reg.dst_reg_index = ((first_dword >> 16) & 0xF);
-        perform_math_reg.src_reg_1_index = ((first_dword >> 12) & 0xF);
-        perform_math_reg.has_immediate = ((first_dword >> 8) & 0xF) != 0;
+        PerformArithmeticRegisterOpcode perform_math_reg{
+            .bit_width = (first_dword >> 24) & 0xF,
+            .math_type = static_cast<RegisterArithmeticType>((first_dword >> 20) & 0xF),
+            .dst_reg_index = (first_dword >> 16) & 0xF,
+            .src_reg_1_index = (first_dword >> 12) & 0xF,
+            .src_reg_2_index = 0,
+            .has_immediate = ((first_dword >> 8) & 0xF) != 0,
+            .value = {},
+        };
         if (perform_math_reg.has_immediate) {
             perform_math_reg.src_reg_2_index = 0;
             perform_math_reg.value = GetNextVmInt(perform_math_reg.bit_width);
@@ -417,7 +411,6 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
         opcode.opcode = perform_math_reg;
     } break;
     case CheatVmOpcodeType::StoreRegisterToAddress: {
-        StoreRegisterToAddressOpcode str_register{};
         // ATSRIOxa (aaaaaaaa)
         // A = opcode 10
         // T = bit width
@@ -429,20 +422,23 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
         //  Relative Address
         // x = offset register (for offset type 1), memory type (for offset type 3)
         // a = relative address (for offset type 2+3)
-        str_register.bit_width = (first_dword >> 24) & 0xF;
-        str_register.str_reg_index = ((first_dword >> 20) & 0xF);
-        str_register.addr_reg_index = ((first_dword >> 16) & 0xF);
-        str_register.increment_reg = ((first_dword >> 12) & 0xF) != 0;
-        str_register.ofs_type = static_cast<StoreRegisterOffsetType>(((first_dword >> 8) & 0xF));
-        str_register.ofs_reg_index = ((first_dword >> 4) & 0xF);
+        StoreRegisterToAddressOpcode str_register{
+            .bit_width = (first_dword >> 24) & 0xF,
+            .str_reg_index = (first_dword >> 20) & 0xF,
+            .addr_reg_index = (first_dword >> 16) & 0xF,
+            .increment_reg = ((first_dword >> 12) & 0xF) != 0,
+            .ofs_type = static_cast<StoreRegisterOffsetType>(((first_dword >> 8) & 0xF)),
+            .mem_type = MemoryAccessType::MainNso,
+            .ofs_reg_index = (first_dword >> 4) & 0xF,
+            .rel_address = 0,
+        };
         switch (str_register.ofs_type) {
         case StoreRegisterOffsetType::None:
         case StoreRegisterOffsetType::Reg:
             // Nothing more to do
             break;
         case StoreRegisterOffsetType::Imm:
-            str_register.rel_address =
-                ((static_cast<u64>(first_dword & 0xF) << 32ul) | static_cast<u64>(GetNextDword()));
+            str_register.rel_address = (static_cast<u64>(first_dword & 0xF) << 32) | GetNextDword();
             break;
         case StoreRegisterOffsetType::MemReg:
             str_register.mem_type = static_cast<MemoryAccessType>((first_dword >> 4) & 0xF);
@@ -450,8 +446,7 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
         case StoreRegisterOffsetType::MemImm:
         case StoreRegisterOffsetType::MemImmReg:
             str_register.mem_type = static_cast<MemoryAccessType>((first_dword >> 4) & 0xF);
-            str_register.rel_address =
-                ((static_cast<u64>(first_dword & 0xF) << 32ul) | static_cast<u64>(GetNextDword()));
+            str_register.rel_address = (static_cast<u64>(first_dword & 0xF) << 32) | GetNextDword();
             break;
         default:
             str_register.ofs_type = StoreRegisterOffsetType::None;
@@ -460,7 +455,6 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
         opcode.opcode = str_register;
     } break;
     case CheatVmOpcodeType::BeginRegisterConditionalBlock: {
-        BeginRegisterConditionalOpcode begin_reg_cond{};
         // C0TcSX##
         // C0TcS0Ma aaaaaaaa
         // C0TcS1Mr
@@ -482,11 +476,19 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
         // r = offset register.
         // X = other register.
         // V = value.
-        begin_reg_cond.bit_width = (first_dword >> 20) & 0xF;
-        begin_reg_cond.cond_type =
-            static_cast<ConditionalComparisonType>((first_dword >> 16) & 0xF);
-        begin_reg_cond.val_reg_index = ((first_dword >> 12) & 0xF);
-        begin_reg_cond.comp_type = static_cast<CompareRegisterValueType>((first_dword >> 8) & 0xF);
+
+        BeginRegisterConditionalOpcode begin_reg_cond{
+            .bit_width = (first_dword >> 20) & 0xF,
+            .cond_type = static_cast<ConditionalComparisonType>((first_dword >> 16) & 0xF),
+            .val_reg_index = (first_dword >> 12) & 0xF,
+            .comp_type = static_cast<CompareRegisterValueType>((first_dword >> 8) & 0xF),
+            .mem_type = MemoryAccessType::MainNso,
+            .addr_reg_index = 0,
+            .other_reg_index = 0,
+            .ofs_reg_index = 0,
+            .rel_address = 0,
+            .value = {},
+        };
 
         switch (begin_reg_cond.comp_type) {
         case CompareRegisterValueType::StaticValue:
@@ -498,26 +500,25 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
         case CompareRegisterValueType::MemoryRelAddr:
             begin_reg_cond.mem_type = static_cast<MemoryAccessType>((first_dword >> 4) & 0xF);
             begin_reg_cond.rel_address =
-                ((static_cast<u64>(first_dword & 0xF) << 32ul) | static_cast<u64>(GetNextDword()));
+                (static_cast<u64>(first_dword & 0xF) << 32) | GetNextDword();
             break;
         case CompareRegisterValueType::MemoryOfsReg:
             begin_reg_cond.mem_type = static_cast<MemoryAccessType>((first_dword >> 4) & 0xF);
             begin_reg_cond.ofs_reg_index = (first_dword & 0xF);
             break;
         case CompareRegisterValueType::RegisterRelAddr:
-            begin_reg_cond.addr_reg_index = ((first_dword >> 4) & 0xF);
+            begin_reg_cond.addr_reg_index = (first_dword >> 4) & 0xF;
             begin_reg_cond.rel_address =
-                ((static_cast<u64>(first_dword & 0xF) << 32ul) | static_cast<u64>(GetNextDword()));
+                (static_cast<u64>(first_dword & 0xF) << 32) | GetNextDword();
             break;
         case CompareRegisterValueType::RegisterOfsReg:
-            begin_reg_cond.addr_reg_index = ((first_dword >> 4) & 0xF);
-            begin_reg_cond.ofs_reg_index = (first_dword & 0xF);
+            begin_reg_cond.addr_reg_index = (first_dword >> 4) & 0xF;
+            begin_reg_cond.ofs_reg_index = first_dword & 0xF;
             break;
         }
         opcode.opcode = begin_reg_cond;
     } break;
     case CheatVmOpcodeType::SaveRestoreRegister: {
-        SaveRestoreRegisterOpcode save_restore_reg{};
         // C10D0Sx0
         // C1 = opcode 0xC1
         // D = destination index.
@@ -525,26 +526,49 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
         // x = 3 if clearing reg, 2 if clearing saved value, 1 if saving a register, 0 if restoring
         // a register.
         // NOTE: If we add more save slots later, current encoding is backwards compatible.
-        save_restore_reg.dst_index = (first_dword >> 16) & 0xF;
-        save_restore_reg.src_index = (first_dword >> 8) & 0xF;
-        save_restore_reg.op_type = static_cast<SaveRestoreRegisterOpType>((first_dword >> 4) & 0xF);
-        opcode.opcode = save_restore_reg;
+        opcode.opcode = SaveRestoreRegisterOpcode{
+            .dst_index = (first_dword >> 16) & 0xF,
+            .src_index = (first_dword >> 8) & 0xF,
+            .op_type = static_cast<SaveRestoreRegisterOpType>((first_dword >> 4) & 0xF),
+        };
     } break;
     case CheatVmOpcodeType::SaveRestoreRegisterMask: {
-        SaveRestoreRegisterMaskOpcode save_restore_regmask{};
         // C2x0XXXX
         // C2 = opcode 0xC2
         // x = 3 if clearing reg, 2 if clearing saved value, 1 if saving, 0 if restoring.
         // X = 16-bit bitmask, bit i --> save or restore register i.
-        save_restore_regmask.op_type =
-            static_cast<SaveRestoreRegisterOpType>((first_dword >> 20) & 0xF);
+        SaveRestoreRegisterMaskOpcode save_restore_regmask{
+            .op_type = static_cast<SaveRestoreRegisterOpType>((first_dword >> 20) & 0xF),
+            .should_operate = {},
+        };
         for (std::size_t i = 0; i < NumRegisters; i++) {
-            save_restore_regmask.should_operate[i] = (first_dword & (1u << i)) != 0;
+            save_restore_regmask.should_operate[i] = (first_dword & (1U << i)) != 0;
         }
         opcode.opcode = save_restore_regmask;
     } break;
+    case CheatVmOpcodeType::ReadWriteStaticRegister: {
+        // C3000XXx
+        // C3 = opcode 0xC3.
+        // XX = static register index.
+        // x  = register index.
+        opcode.opcode = ReadWriteStaticRegisterOpcode{
+            .static_idx = (first_dword >> 4) & 0xFF,
+            .idx = first_dword & 0xF,
+        };
+    } break;
+    case CheatVmOpcodeType::PauseProcess: {
+        /* FF0????? */
+        /* FF0 = opcode 0xFF0 */
+        /* Pauses the current process. */
+        opcode.opcode = PauseProcessOpcode{};
+    } break;
+    case CheatVmOpcodeType::ResumeProcess: {
+        /* FF0????? */
+        /* FF0 = opcode 0xFF0 */
+        /* Pauses the current process. */
+        opcode.opcode = ResumeProcessOpcode{};
+    } break;
     case CheatVmOpcodeType::DebugLog: {
-        DebugLogOpcode debug_log{};
         // FFFTIX##
         // FFFTI0Ma aaaaaaaa
         // FFFTI1Mr
@@ -563,31 +587,36 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
         // a = relative address.
         // r = offset register.
         // X = value register.
-        debug_log.bit_width = (first_dword >> 16) & 0xF;
-        debug_log.log_id = ((first_dword >> 12) & 0xF);
-        debug_log.val_type = static_cast<DebugLogValueType>((first_dword >> 8) & 0xF);
+        DebugLogOpcode debug_log{
+            .bit_width = (first_dword >> 16) & 0xF,
+            .log_id = (first_dword >> 12) & 0xF,
+            .val_type = static_cast<DebugLogValueType>((first_dword >> 8) & 0xF),
+            .mem_type = MemoryAccessType::MainNso,
+            .addr_reg_index = 0,
+            .val_reg_index = 0,
+            .ofs_reg_index = 0,
+            .rel_address = 0,
+        };
 
         switch (debug_log.val_type) {
         case DebugLogValueType::RegisterValue:
-            debug_log.val_reg_index = ((first_dword >> 4) & 0xF);
+            debug_log.val_reg_index = (first_dword >> 4) & 0xF;
             break;
         case DebugLogValueType::MemoryRelAddr:
             debug_log.mem_type = static_cast<MemoryAccessType>((first_dword >> 4) & 0xF);
-            debug_log.rel_address =
-                ((static_cast<u64>(first_dword & 0xF) << 32ul) | static_cast<u64>(GetNextDword()));
+            debug_log.rel_address = (static_cast<u64>(first_dword & 0xF) << 32) | GetNextDword();
             break;
         case DebugLogValueType::MemoryOfsReg:
             debug_log.mem_type = static_cast<MemoryAccessType>((first_dword >> 4) & 0xF);
-            debug_log.ofs_reg_index = (first_dword & 0xF);
+            debug_log.ofs_reg_index = first_dword & 0xF;
             break;
         case DebugLogValueType::RegisterRelAddr:
-            debug_log.addr_reg_index = ((first_dword >> 4) & 0xF);
-            debug_log.rel_address =
-                ((static_cast<u64>(first_dword & 0xF) << 32ul) | static_cast<u64>(GetNextDword()));
+            debug_log.addr_reg_index = (first_dword >> 4) & 0xF;
+            debug_log.rel_address = (static_cast<u64>(first_dword & 0xF) << 32) | GetNextDword();
             break;
         case DebugLogValueType::RegisterOfsReg:
-            debug_log.addr_reg_index = ((first_dword >> 4) & 0xF);
-            debug_log.ofs_reg_index = (first_dword & 0xF);
+            debug_log.addr_reg_index = (first_dword >> 4) & 0xF;
+            debug_log.ofs_reg_index = first_dword & 0xF;
             break;
         }
         opcode.opcode = debug_log;
@@ -605,7 +634,7 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
     return valid;
 }
 
-void DmntCheatVm::SkipConditionalBlock() {
+void DmntCheatVm::SkipConditionalBlock(bool is_if) {
     if (condition_depth > 0) {
         // We want to continue until we're out of the current block.
         const std::size_t desired_depth = condition_depth - 1;
@@ -621,8 +650,12 @@ void DmntCheatVm::SkipConditionalBlock() {
             // We also support nesting of conditional blocks, and Gateway does not.
             if (skip_opcode.begin_conditional_block) {
                 condition_depth++;
-            } else if (std::holds_alternative<EndConditionalOpcode>(skip_opcode.opcode)) {
-                condition_depth--;
+            } else if (auto end_cond = std::get_if<EndConditionalOpcode>(&skip_opcode.opcode)) {
+                if (!end_cond->is_else) {
+                    condition_depth--;
+                } else if (is_if && condition_depth - 1 == desired_depth) {
+                    break;
+                }
             }
         }
     } else {
@@ -659,6 +692,10 @@ u64 DmntCheatVm::GetCheatProcessAddress(const CheatProcessMetadata& metadata,
         return metadata.main_nso_extents.base + rel_address;
     case MemoryAccessType::Heap:
         return metadata.heap_extents.base + rel_address;
+    case MemoryAccessType::Alias:
+        return metadata.alias_extents.base + rel_address;
+    case MemoryAccessType::Aslr:
+        return metadata.aslr_extents.base + rel_address;
     }
 }
 
@@ -736,7 +773,7 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
             case 2:
             case 4:
             case 8:
-                callbacks->MemoryWrite(dst_address, &dst_value, store_static->bit_width);
+                callbacks->MemoryWriteUnsafe(dst_address, &dst_value, store_static->bit_width);
                 break;
             }
         } else if (auto begin_cond = std::get_if<BeginConditionalOpcode>(&cur_opcode.opcode)) {
@@ -744,12 +781,12 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
             u64 src_address =
                 GetCheatProcessAddress(metadata, begin_cond->mem_type, begin_cond->rel_address);
             u64 src_value = 0;
-            switch (store_static->bit_width) {
+            switch (begin_cond->bit_width) {
             case 1:
             case 2:
             case 4:
             case 8:
-                callbacks->MemoryRead(src_address, &src_value, begin_cond->bit_width);
+                callbacks->MemoryReadUnsafe(src_address, &src_value, begin_cond->bit_width);
                 break;
             }
             // Check against condition.
@@ -777,13 +814,18 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
             }
             // Skip conditional block if condition not met.
             if (!cond_met) {
-                SkipConditionalBlock();
+                SkipConditionalBlock(true);
             }
         } else if (auto end_cond = std::get_if<EndConditionalOpcode>(&cur_opcode.opcode)) {
-            // Decrement the condition depth.
-            // We will assume, graciously, that mismatched conditional block ends are a nop.
-            if (condition_depth > 0) {
-                condition_depth--;
+            if (end_cond->is_else) {
+                /* Skip to the end of the conditional block. */
+                this->SkipConditionalBlock(false);
+            } else {
+                /* Decrement the condition depth. */
+                /* We will assume, graciously, that mismatched conditional block ends are a nop. */
+                if (condition_depth > 0) {
+                    condition_depth--;
+                }
             }
         } else if (auto ctrl_loop = std::get_if<ControlLoopOpcode>(&cur_opcode.opcode)) {
             if (ctrl_loop->start_loop) {
@@ -815,8 +857,8 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
             case 2:
             case 4:
             case 8:
-                callbacks->MemoryRead(src_address, &registers[ldr_memory->reg_index],
-                                      ldr_memory->bit_width);
+                callbacks->MemoryReadUnsafe(src_address, &registers[ldr_memory->reg_index],
+                                            ldr_memory->bit_width);
                 break;
             }
         } else if (auto str_static = std::get_if<StoreStaticToAddressOpcode>(&cur_opcode.opcode)) {
@@ -832,7 +874,7 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
             case 2:
             case 4:
             case 8:
-                callbacks->MemoryWrite(dst_address, &dst_value, str_static->bit_width);
+                callbacks->MemoryWriteUnsafe(dst_address, &dst_value, str_static->bit_width);
                 break;
             }
             // Increment register if relevant.
@@ -891,7 +933,7 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
             // Check for keypress.
             if ((begin_keypress_cond->key_mask & kDown) != begin_keypress_cond->key_mask) {
                 // Keys not pressed. Skip conditional block.
-                SkipConditionalBlock();
+                SkipConditionalBlock(true);
             }
         } else if (auto perform_math_reg =
                        std::get_if<PerformArithmeticRegisterOpcode>(&cur_opcode.opcode)) {
@@ -990,7 +1032,7 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
             case 2:
             case 4:
             case 8:
-                callbacks->MemoryWrite(dst_address, &dst_value, str_register->bit_width);
+                callbacks->MemoryWriteUnsafe(dst_address, &dst_value, str_register->bit_width);
                 break;
             }
 
@@ -1069,7 +1111,8 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
                 case 2:
                 case 4:
                 case 8:
-                    callbacks->MemoryRead(cond_address, &cond_value, begin_reg_cond->bit_width);
+                    callbacks->MemoryReadUnsafe(cond_address, &cond_value,
+                                                begin_reg_cond->bit_width);
                     break;
                 }
             }
@@ -1099,7 +1142,7 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
 
             // Skip conditional block if condition not met.
             if (!cond_met) {
-                SkipConditionalBlock();
+                SkipConditionalBlock(true);
             }
         } else if (auto save_restore_reg =
                        std::get_if<SaveRestoreRegisterOpcode>(&cur_opcode.opcode)) {
@@ -1152,6 +1195,19 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
                     }
                 }
             }
+        } else if (auto rw_static_reg =
+                       std::get_if<ReadWriteStaticRegisterOpcode>(&cur_opcode.opcode)) {
+            if (rw_static_reg->static_idx < NumReadableStaticRegisters) {
+                // Load a register with a static register.
+                registers[rw_static_reg->idx] = static_registers[rw_static_reg->static_idx];
+            } else {
+                // Store a register to a static register.
+                static_registers[rw_static_reg->static_idx] = registers[rw_static_reg->idx];
+            }
+        } else if (std::holds_alternative<PauseProcessOpcode>(cur_opcode.opcode)) {
+            callbacks->PauseProcess();
+        } else if (std::holds_alternative<ResumeProcessOpcode>(cur_opcode.opcode)) {
+            callbacks->ResumeProcess();
         } else if (auto debug_log = std::get_if<DebugLogOpcode>(&cur_opcode.opcode)) {
             // Read value from memory.
             u64 log_value = 0;
@@ -1198,7 +1254,7 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
                 case 2:
                 case 4:
                 case 8:
-                    callbacks->MemoryRead(val_address, &log_value, debug_log->bit_width);
+                    callbacks->MemoryReadUnsafe(val_address, &log_value, debug_log->bit_width);
                     break;
                 }
             }
@@ -1209,4 +1265,4 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
     }
 }
 
-} // namespace Memory
+} // namespace Core::Memory

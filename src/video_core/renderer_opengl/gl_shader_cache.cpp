@@ -1,745 +1,616 @@
-// Copyright 2018 yuzu Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <fstream>
+#include <functional>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <thread>
-#include <unordered_set>
-#include <boost/functional/hash.hpp>
+
+#include "common/alignment.h"
 #include "common/assert.h"
-#include "common/scope_exit.h"
-#include "core/core.h"
-#include "core/frontend/emu_window.h"
+#include "common/fs/fs.h"
+#include "common/fs/path_util.h"
+#include "common/logging/log.h"
+#include "common/settings.h"
+#include "common/thread_worker.h"
+#include "shader_recompiler/backend/glasm/emit_glasm.h"
+#include "shader_recompiler/backend/glsl/emit_glsl.h"
+#include "shader_recompiler/backend/spirv/emit_spirv.h"
+#include "shader_recompiler/frontend/ir/program.h"
+#include "shader_recompiler/frontend/maxwell/control_flow.h"
+#include "shader_recompiler/frontend/maxwell/translate_program.h"
+#include "shader_recompiler/profile.h"
+#include "video_core/engines/draw_manager.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_opengl/gl_rasterizer.h"
 #include "video_core/renderer_opengl/gl_shader_cache.h"
-#include "video_core/renderer_opengl/gl_shader_decompiler.h"
-#include "video_core/renderer_opengl/gl_shader_disk_cache.h"
-#include "video_core/renderer_opengl/utils.h"
-#include "video_core/shader/shader_ir.h"
+#include "video_core/renderer_opengl/gl_shader_util.h"
+#include "video_core/renderer_opengl/gl_state_tracker.h"
+#include "video_core/shader_cache.h"
+#include "video_core/shader_environment.h"
+#include "video_core/shader_notify.h"
 
 namespace OpenGL {
-
-using Tegra::Engines::ShaderType;
-using VideoCommon::Shader::ConstBufferLocker;
-using VideoCommon::Shader::ProgramCode;
-using VideoCommon::Shader::ShaderIR;
-
 namespace {
+using Shader::Backend::GLASM::EmitGLASM;
+using Shader::Backend::GLSL::EmitGLSL;
+using Shader::Backend::SPIRV::EmitSPIRV;
+using Shader::Maxwell::ConvertLegacyToGeneric;
+using Shader::Maxwell::GenerateGeometryPassthrough;
+using Shader::Maxwell::MergeDualVertexPrograms;
+using Shader::Maxwell::TranslateProgram;
+using VideoCommon::ComputeEnvironment;
+using VideoCommon::FileEnvironment;
+using VideoCommon::GenericEnvironment;
+using VideoCommon::GraphicsEnvironment;
+using VideoCommon::LoadPipelines;
+using VideoCommon::SerializePipeline;
+using Context = ShaderContext::Context;
 
-// One UBO is always reserved for emulation values on staged shaders
-constexpr u32 STAGE_RESERVED_UBOS = 1;
+constexpr u32 CACHE_VERSION = 10;
 
-constexpr u32 STAGE_MAIN_OFFSET = 10;
-constexpr u32 KERNEL_MAIN_OFFSET = 0;
-
-constexpr VideoCommon::Shader::CompilerSettings COMPILER_SETTINGS{};
-
-/// Gets the address for the specified shader stage program
-GPUVAddr GetShaderAddress(Core::System& system, Maxwell::ShaderProgram program) {
-    const auto& gpu{system.GPU().Maxwell3D()};
-    const auto& shader_config{gpu.regs.shader_config[static_cast<std::size_t>(program)]};
-    return gpu.regs.code_address.CodeAddress() + shader_config.offset;
+template <typename Container>
+auto MakeSpan(Container& container) {
+    return std::span(container.data(), container.size());
 }
 
-/// Gets if the current instruction offset is a scheduler instruction
-constexpr bool IsSchedInstruction(std::size_t offset, std::size_t main_offset) {
-    // Sched instructions appear once every 4 instructions.
-    constexpr std::size_t SchedPeriod = 4;
-    const std::size_t absolute_offset = offset - main_offset;
-    return (absolute_offset % SchedPeriod) == 0;
-}
-
-/// Calculates the size of a program stream
-std::size_t CalculateProgramSize(const GLShader::ProgramCode& program) {
-    constexpr std::size_t start_offset = 10;
-    // This is the encoded version of BRA that jumps to itself. All Nvidia
-    // shaders end with one.
-    constexpr u64 self_jumping_branch = 0xE2400FFFFF07000FULL;
-    constexpr u64 mask = 0xFFFFFFFFFF7FFFFFULL;
-    std::size_t offset = start_offset;
-    while (offset < program.size()) {
-        const u64 instruction = program[offset];
-        if (!IsSchedInstruction(offset, start_offset)) {
-            if ((instruction & mask) == self_jumping_branch) {
-                // End on Maxwell's "nop" instruction
-                break;
-            }
-            if (instruction == 0) {
-                break;
-            }
-        }
-        offset++;
-    }
-    // The last instruction is included in the program size
-    return std::min(offset + 1, program.size());
-}
-
-/// Gets the shader program code from memory for the specified address
-ProgramCode GetShaderCode(Tegra::MemoryManager& memory_manager, const GPUVAddr gpu_addr,
-                          const u8* host_ptr) {
-    ProgramCode program_code(VideoCommon::Shader::MAX_PROGRAM_LENGTH);
-    ASSERT_OR_EXECUTE(host_ptr != nullptr, {
-        std::fill(program_code.begin(), program_code.end(), 0);
-        return program_code;
-    });
-    memory_manager.ReadBlockUnsafe(gpu_addr, program_code.data(),
-                                   program_code.size() * sizeof(u64));
-    program_code.resize(CalculateProgramSize(program_code));
-    return program_code;
-}
-
-/// Gets the shader type from a Maxwell program type
-constexpr GLenum GetShaderType(ProgramType program_type) {
-    switch (program_type) {
-    case ProgramType::VertexA:
-    case ProgramType::VertexB:
-        return GL_VERTEX_SHADER;
-    case ProgramType::Geometry:
-        return GL_GEOMETRY_SHADER;
-    case ProgramType::Fragment:
-        return GL_FRAGMENT_SHADER;
-    case ProgramType::Compute:
-        return GL_COMPUTE_SHADER;
+Shader::OutputTopology MaxwellToOutputTopology(Maxwell::PrimitiveTopology topology) {
+    switch (topology) {
+    case Maxwell::PrimitiveTopology::Points:
+        return Shader::OutputTopology::PointList;
+    case Maxwell::PrimitiveTopology::LineStrip:
+        return Shader::OutputTopology::LineStrip;
     default:
-        return GL_NONE;
+        return Shader::OutputTopology::TriangleStrip;
     }
 }
 
-/// Describes primitive behavior on geometry shaders
-constexpr std::tuple<const char*, const char*, u32> GetPrimitiveDescription(GLenum primitive_mode) {
-    switch (primitive_mode) {
-    case GL_POINTS:
-        return {"points", "Points", 1};
-    case GL_LINES:
-    case GL_LINE_STRIP:
-        return {"lines", "Lines", 2};
-    case GL_LINES_ADJACENCY:
-    case GL_LINE_STRIP_ADJACENCY:
-        return {"lines_adjacency", "LinesAdj", 4};
-    case GL_TRIANGLES:
-    case GL_TRIANGLE_STRIP:
-    case GL_TRIANGLE_FAN:
-        return {"triangles", "Triangles", 3};
-    case GL_TRIANGLES_ADJACENCY:
-    case GL_TRIANGLE_STRIP_ADJACENCY:
-        return {"triangles_adjacency", "TrianglesAdj", 6};
-    default:
-        return {"points", "Invalid", 1};
-    }
-}
-
-ProgramType GetProgramType(Maxwell::ShaderProgram program) {
-    switch (program) {
-    case Maxwell::ShaderProgram::VertexA:
-        return ProgramType::VertexA;
-    case Maxwell::ShaderProgram::VertexB:
-        return ProgramType::VertexB;
-    case Maxwell::ShaderProgram::TesselationControl:
-        return ProgramType::TessellationControl;
-    case Maxwell::ShaderProgram::TesselationEval:
-        return ProgramType::TessellationEval;
-    case Maxwell::ShaderProgram::Geometry:
-        return ProgramType::Geometry;
-    case Maxwell::ShaderProgram::Fragment:
-        return ProgramType::Fragment;
-    }
-    UNREACHABLE();
-    return {};
-}
-
-/// Hashes one (or two) program streams
-u64 GetUniqueIdentifier(ProgramType program_type, const ProgramCode& code,
-                        const ProgramCode& code_b) {
-    u64 unique_identifier = boost::hash_value(code);
-    if (program_type == ProgramType::VertexA) {
-        // VertexA programs include two programs
-        boost::hash_combine(unique_identifier, boost::hash_value(code_b));
-    }
-    return unique_identifier;
-}
-
-/// Creates an unspecialized program from code streams
-std::string GenerateGLSL(const Device& device, ProgramType program_type, const ShaderIR& ir,
-                         const std::optional<ShaderIR>& ir_b) {
-    switch (program_type) {
-    case ProgramType::VertexA:
-    case ProgramType::VertexB:
-        return GLShader::GenerateVertexShader(device, ir, ir_b ? &*ir_b : nullptr);
-    case ProgramType::Geometry:
-        return GLShader::GenerateGeometryShader(device, ir);
-    case ProgramType::Fragment:
-        return GLShader::GenerateFragmentShader(device, ir);
-    case ProgramType::Compute:
-        return GLShader::GenerateComputeShader(device, ir);
-    default:
-        UNIMPLEMENTED_MSG("Unimplemented program_type={}", static_cast<u32>(program_type));
-        return {};
-    }
-}
-
-constexpr const char* GetProgramTypeName(ProgramType program_type) {
-    switch (program_type) {
-    case ProgramType::VertexA:
-    case ProgramType::VertexB:
-        return "VS";
-    case ProgramType::TessellationControl:
-        return "TCS";
-    case ProgramType::TessellationEval:
-        return "TES";
-    case ProgramType::Geometry:
-        return "GS";
-    case ProgramType::Fragment:
-        return "FS";
-    case ProgramType::Compute:
-        return "CS";
-    }
-    return "UNK";
-}
-
-Tegra::Engines::ShaderType GetEnginesShaderType(ProgramType program_type) {
-    switch (program_type) {
-    case ProgramType::VertexA:
-    case ProgramType::VertexB:
-        return Tegra::Engines::ShaderType::Vertex;
-    case ProgramType::TessellationControl:
-        return Tegra::Engines::ShaderType::TesselationControl;
-    case ProgramType::TessellationEval:
-        return Tegra::Engines::ShaderType::TesselationEval;
-    case ProgramType::Geometry:
-        return Tegra::Engines::ShaderType::Geometry;
-    case ProgramType::Fragment:
-        return Tegra::Engines::ShaderType::Fragment;
-    case ProgramType::Compute:
-        return Tegra::Engines::ShaderType::Compute;
-    }
-    UNREACHABLE();
-    return {};
-}
-
-std::string GetShaderId(u64 unique_identifier, ProgramType program_type) {
-    return fmt::format("{}{:016X}", GetProgramTypeName(program_type), unique_identifier);
-}
-
-Tegra::Engines::ConstBufferEngineInterface& GetConstBufferEngineInterface(
-    Core::System& system, ProgramType program_type) {
-    if (program_type == ProgramType::Compute) {
-        return system.GPU().KeplerCompute();
+Shader::RuntimeInfo MakeRuntimeInfo(const GraphicsPipelineKey& key,
+                                    const Shader::IR::Program& program,
+                                    const Shader::IR::Program* previous_program,
+                                    bool glasm_use_storage_buffers, bool use_assembly_shaders) {
+    Shader::RuntimeInfo info;
+    if (previous_program) {
+        info.previous_stage_stores = previous_program->info.stores;
+        info.previous_stage_legacy_stores_mapping = previous_program->info.legacy_stores_mapping;
     } else {
-        return system.GPU().Maxwell3D();
+        // Mark all stores as available for vertex shaders
+        info.previous_stage_stores.mask.set();
     }
-}
-
-std::unique_ptr<ConstBufferLocker> MakeLocker(Core::System& system, ProgramType program_type) {
-    return std::make_unique<ConstBufferLocker>(GetEnginesShaderType(program_type),
-                                               GetConstBufferEngineInterface(system, program_type));
-}
-
-void FillLocker(ConstBufferLocker& locker, const ShaderDiskCacheUsage& usage) {
-    for (const auto& key : usage.keys) {
-        const auto [buffer, offset] = key.first;
-        locker.InsertKey(buffer, offset, key.second);
-    }
-    for (const auto& [offset, sampler] : usage.bound_samplers) {
-        locker.InsertBoundSampler(offset, sampler);
-    }
-    for (const auto& [key, sampler] : usage.bindless_samplers) {
-        const auto [buffer, offset] = key;
-        locker.InsertBindlessSampler(buffer, offset, sampler);
-    }
-}
-
-CachedProgram BuildShader(const Device& device, u64 unique_identifier, ProgramType program_type,
-                          const ProgramCode& program_code, const ProgramCode& program_code_b,
-                          const ProgramVariant& variant, ConstBufferLocker& locker,
-                          bool hint_retrievable = false) {
-    LOG_INFO(Render_OpenGL, "called. {}", GetShaderId(unique_identifier, program_type));
-
-    const bool is_compute = program_type == ProgramType::Compute;
-    const u32 main_offset = is_compute ? KERNEL_MAIN_OFFSET : STAGE_MAIN_OFFSET;
-    const ShaderIR ir(program_code, main_offset, COMPILER_SETTINGS, locker);
-    std::optional<ShaderIR> ir_b;
-    if (!program_code_b.empty()) {
-        ir_b.emplace(program_code_b, main_offset, COMPILER_SETTINGS, locker);
-    }
-    const auto entries = GLShader::GetEntries(ir);
-
-    auto base_bindings{variant.base_bindings};
-    const auto primitive_mode{variant.primitive_mode};
-    const auto texture_buffer_usage{variant.texture_buffer_usage};
-
-    std::string source = fmt::format(R"(// {}
-#version 430 core
-#extension GL_ARB_separate_shader_objects : enable
-#extension GL_ARB_shader_viewport_layer_array : enable
-#extension GL_EXT_shader_image_load_formatted : enable
-#extension GL_NV_gpu_shader5 : enable
-#extension GL_NV_shader_thread_group : enable
-#extension GL_NV_shader_thread_shuffle : enable
-)",
-                                     GetShaderId(unique_identifier, program_type));
-    if (is_compute) {
-        source += "#extension GL_ARB_compute_variable_group_size : require\n";
-    }
-    source += '\n';
-
-    if (!is_compute) {
-        source += fmt::format("#define EMULATION_UBO_BINDING {}\n", base_bindings.cbuf++);
-    }
-
-    for (const auto& cbuf : entries.const_buffers) {
-        source +=
-            fmt::format("#define CBUF_BINDING_{} {}\n", cbuf.GetIndex(), base_bindings.cbuf++);
-    }
-    for (const auto& gmem : entries.global_memory_entries) {
-        source += fmt::format("#define GMEM_BINDING_{}_{} {}\n", gmem.GetCbufIndex(),
-                              gmem.GetCbufOffset(), base_bindings.gmem++);
-    }
-    for (const auto& sampler : entries.samplers) {
-        source += fmt::format("#define SAMPLER_BINDING_{} {}\n", sampler.GetIndex(),
-                              base_bindings.sampler++);
-    }
-    for (const auto& image : entries.images) {
-        source +=
-            fmt::format("#define IMAGE_BINDING_{} {}\n", image.GetIndex(), base_bindings.image++);
-    }
-
-    // Transform 1D textures to texture samplers by declaring its preprocessor macros.
-    for (std::size_t i = 0; i < texture_buffer_usage.size(); ++i) {
-        if (!texture_buffer_usage.test(i)) {
-            continue;
+    switch (program.stage) {
+    case Shader::Stage::VertexB:
+    case Shader::Stage::Geometry:
+        if (!use_assembly_shaders && key.xfb_enabled != 0) {
+            auto [varyings, count] = VideoCommon::MakeTransformFeedbackVaryings(key.xfb_state);
+            info.xfb_varyings = varyings;
+            info.xfb_count = count;
         }
-        source += fmt::format("#define SAMPLER_{}_IS_BUFFER\n", i);
+        break;
+    case Shader::Stage::TessellationEval:
+        // Flip the face, as OpenGL's drawing is flipped.
+        info.tess_clockwise = key.tessellation_clockwise == 0;
+        info.tess_primitive = [&key] {
+            switch (key.tessellation_primitive) {
+            case Maxwell::Tessellation::DomainType::Isolines:
+                return Shader::TessPrimitive::Isolines;
+            case Maxwell::Tessellation::DomainType::Triangles:
+                return Shader::TessPrimitive::Triangles;
+            case Maxwell::Tessellation::DomainType::Quads:
+                return Shader::TessPrimitive::Quads;
+            }
+            ASSERT(false);
+            return Shader::TessPrimitive::Triangles;
+        }();
+        info.tess_spacing = [&] {
+            switch (key.tessellation_spacing) {
+            case Maxwell::Tessellation::Spacing::Integer:
+                return Shader::TessSpacing::Equal;
+            case Maxwell::Tessellation::Spacing::FractionalOdd:
+                return Shader::TessSpacing::FractionalOdd;
+            case Maxwell::Tessellation::Spacing::FractionalEven:
+                return Shader::TessSpacing::FractionalEven;
+            }
+            ASSERT(false);
+            return Shader::TessSpacing::Equal;
+        }();
+        break;
+    case Shader::Stage::Fragment:
+        info.force_early_z = key.early_z != 0;
+        break;
+    default:
+        break;
     }
-    if (texture_buffer_usage.any()) {
-        source += '\n';
+    switch (key.gs_input_topology) {
+    case Maxwell::PrimitiveTopology::Points:
+        info.input_topology = Shader::InputTopology::Points;
+        break;
+    case Maxwell::PrimitiveTopology::Lines:
+    case Maxwell::PrimitiveTopology::LineLoop:
+    case Maxwell::PrimitiveTopology::LineStrip:
+        info.input_topology = Shader::InputTopology::Lines;
+        break;
+    case Maxwell::PrimitiveTopology::Triangles:
+    case Maxwell::PrimitiveTopology::TriangleStrip:
+    case Maxwell::PrimitiveTopology::TriangleFan:
+    case Maxwell::PrimitiveTopology::Quads:
+    case Maxwell::PrimitiveTopology::QuadStrip:
+    case Maxwell::PrimitiveTopology::Polygon:
+    case Maxwell::PrimitiveTopology::Patches:
+        info.input_topology = Shader::InputTopology::Triangles;
+        break;
+    case Maxwell::PrimitiveTopology::LinesAdjacency:
+    case Maxwell::PrimitiveTopology::LineStripAdjacency:
+        info.input_topology = Shader::InputTopology::LinesAdjacency;
+        break;
+    case Maxwell::PrimitiveTopology::TrianglesAdjacency:
+    case Maxwell::PrimitiveTopology::TriangleStripAdjacency:
+        info.input_topology = Shader::InputTopology::TrianglesAdjacency;
+        break;
     }
-
-    if (program_type == ProgramType::Geometry) {
-        const auto [glsl_topology, debug_name, max_vertices] =
-            GetPrimitiveDescription(primitive_mode);
-
-        source += "layout (" + std::string(glsl_topology) + ") in;\n\n";
-        source += "#define MAX_VERTEX_INPUT " + std::to_string(max_vertices) + '\n';
-    }
-    if (program_type == ProgramType::Compute) {
-        source += "layout (local_size_variable) in;\n";
-    }
-
-    source += '\n';
-    source += GenerateGLSL(device, program_type, ir, ir_b);
-
-    OGLShader shader;
-    shader.Create(source.c_str(), GetShaderType(program_type));
-
-    auto program = std::make_shared<OGLProgram>();
-    program->Create(true, hint_retrievable, shader.handle);
-    return program;
+    info.glasm_use_storage_buffers = glasm_use_storage_buffers;
+    return info;
 }
 
-std::unordered_set<GLenum> GetSupportedFormats() {
-    GLint num_formats{};
-    glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &num_formats);
-
-    std::vector<GLint> formats(num_formats);
-    glGetIntegerv(GL_PROGRAM_BINARY_FORMATS, formats.data());
-
-    std::unordered_set<GLenum> supported_formats;
-    for (const GLint format : formats) {
-        supported_formats.insert(static_cast<GLenum>(format));
-    }
-    return supported_formats;
+void SetXfbState(VideoCommon::TransformFeedbackState& state, const Maxwell& regs) {
+    std::ranges::transform(regs.transform_feedback.controls, state.layouts.begin(),
+                           [](const auto& layout) {
+                               return VideoCommon::TransformFeedbackState::Layout{
+                                   .stream = layout.stream,
+                                   .varying_count = layout.varying_count,
+                                   .stride = layout.stride,
+                               };
+                           });
+    state.varyings = regs.stream_out_layout;
 }
-
 } // Anonymous namespace
 
-CachedShader::CachedShader(const ShaderParameters& params, ProgramType program_type,
-                           GLShader::ShaderEntries entries, ProgramCode program_code,
-                           ProgramCode program_code_b)
-    : RasterizerCacheObject{params.host_ptr}, system{params.system},
-      disk_cache{params.disk_cache}, device{params.device}, cpu_addr{params.cpu_addr},
-      unique_identifier{params.unique_identifier}, program_type{program_type}, entries{entries},
-      program_code{std::move(program_code)}, program_code_b{std::move(program_code_b)} {
-    if (!params.precompiled_variants) {
+ShaderCache::ShaderCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
+                         Core::Frontend::EmuWindow& emu_window_, const Device& device_,
+                         TextureCache& texture_cache_, BufferCache& buffer_cache_,
+                         ProgramManager& program_manager_, StateTracker& state_tracker_,
+                         VideoCore::ShaderNotify& shader_notify_)
+    : VideoCommon::ShaderCache{device_memory_}, emu_window{emu_window_}, device{device_},
+      texture_cache{texture_cache_}, buffer_cache{buffer_cache_}, program_manager{program_manager_},
+      state_tracker{state_tracker_}, shader_notify{shader_notify_},
+      use_asynchronous_shaders{device.UseAsynchronousShaders()},
+      strict_context_required{device.StrictContextRequired()},
+      profile{
+          .supported_spirv = 0x00010000,
+
+          .unified_descriptor_binding = false,
+          .support_descriptor_aliasing = false,
+          .support_int8 = false,
+          .support_int16 = false,
+          .support_int64 = device.HasShaderInt64(),
+          .support_vertex_instance_id = true,
+          .support_float_controls = false,
+          .support_separate_denorm_behavior = false,
+          .support_separate_rounding_mode = false,
+          .support_fp16_denorm_preserve = false,
+          .support_fp32_denorm_preserve = false,
+          .support_fp16_denorm_flush = false,
+          .support_fp32_denorm_flush = false,
+          .support_fp16_signed_zero_nan_preserve = false,
+          .support_fp32_signed_zero_nan_preserve = false,
+          .support_fp64_signed_zero_nan_preserve = false,
+          .support_explicit_workgroup_layout = false,
+          .support_vote = true,
+          .support_viewport_index_layer_non_geometry =
+              device.HasNvViewportArray2() || device.HasVertexViewportLayer(),
+          .support_viewport_mask = device.HasNvViewportArray2(),
+          .support_typeless_image_loads = device.HasImageLoadFormatted(),
+          .support_demote_to_helper_invocation = false,
+          .support_int64_atomics = false,
+          .support_derivative_control = device.HasDerivativeControl(),
+          .support_geometry_shader_passthrough = device.HasGeometryShaderPassthrough(),
+          .support_native_ndc = true,
+          .support_gl_nv_gpu_shader_5 = device.HasNvGpuShader5(),
+          .support_gl_amd_gpu_shader_half_float = device.HasAmdShaderHalfFloat(),
+          .support_gl_texture_shadow_lod = device.HasTextureShadowLod(),
+          .support_gl_warp_intrinsics = false,
+          .support_gl_variable_aoffi = device.HasVariableAoffi(),
+          .support_gl_sparse_textures = device.HasSparseTexture2(),
+          .support_gl_derivative_control = device.HasDerivativeControl(),
+          .support_geometry_streams = true,
+
+          .warp_size_potentially_larger_than_guest = device.IsWarpSizePotentiallyLargerThanGuest(),
+
+          .lower_left_origin_mode = true,
+          .need_declared_frag_colors = true,
+          .need_fastmath_off = device.NeedsFastmathOff(),
+          .need_gather_subpixel_offset = device.IsAmd() || device.IsIntel(),
+
+          .has_broken_spirv_clamp = true,
+          .has_broken_unsigned_image_offsets = true,
+          .has_broken_signed_operations = true,
+          .has_broken_fp16_float_controls = false,
+          .has_gl_component_indexing_bug = device.HasComponentIndexingBug(),
+          .has_gl_precise_bug = device.HasPreciseBug(),
+          .has_gl_cbuf_ftou_bug = device.HasCbufFtouBug(),
+          .has_gl_bool_ref_bug = device.HasBoolRefBug(),
+          .ignore_nan_fp_comparisons = true,
+          .gl_max_compute_smem_size = device.GetMaxComputeSharedMemorySize(),
+          .min_ssbo_alignment = device.GetShaderStorageBufferAlignment(),
+          .max_user_clip_distances = 8,
+      },
+      host_info{
+          .support_float64 = true,
+          .support_float16 = false,
+          .support_int64 = device.HasShaderInt64(),
+          .needs_demote_reorder = device.IsAmd(),
+          .support_snorm_render_buffer = false,
+          .support_viewport_index_layer = device.HasVertexViewportLayer(),
+          .min_ssbo_alignment = static_cast<u32>(device.GetShaderStorageBufferAlignment()),
+          .support_geometry_shader_passthrough = device.HasGeometryShaderPassthrough(),
+          .support_conditional_barrier = device.SupportsConditionalBarriers(),
+      } {
+    if (use_asynchronous_shaders) {
+        workers = CreateWorkers();
+    }
+}
+
+ShaderCache::~ShaderCache() = default;
+
+void ShaderCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
+                                    const VideoCore::DiskResourceLoadCallback& callback) {
+    if (title_id == 0) {
         return;
     }
-    for (const auto& pair : *params.precompiled_variants) {
-        auto locker = MakeLocker(system, program_type);
-        const auto& usage = pair->first;
-        FillLocker(*locker, usage);
+    const auto shader_dir{Common::FS::GetYuzuPath(Common::FS::YuzuPath::ShaderDir)};
+    const auto base_dir{shader_dir / fmt::format("{:016x}", title_id)};
+    if (!Common::FS::CreateDir(shader_dir) || !Common::FS::CreateDir(base_dir)) {
+        LOG_ERROR(Common_Filesystem, "Failed to create shader cache directories");
+        return;
+    }
+    shader_cache_filename = base_dir / "opengl.bin";
 
-        std::unique_ptr<LockerVariant>* locker_variant = nullptr;
-        const auto it =
-            std::find_if(locker_variants.begin(), locker_variants.end(), [&](const auto& variant) {
-                return variant->locker->HasEqualKeys(*locker);
-            });
-        if (it == locker_variants.end()) {
-            locker_variant = &locker_variants.emplace_back();
-            *locker_variant = std::make_unique<LockerVariant>();
-            locker_variant->get()->locker = std::move(locker);
+    if (!workers && !strict_context_required) {
+        workers = CreateWorkers();
+    }
+    std::optional<Context> strict_context;
+    if (strict_context_required) {
+        strict_context.emplace(emu_window);
+    }
+
+    struct {
+        std::mutex mutex;
+        size_t total{};
+        size_t built{};
+        bool has_loaded{};
+    } state;
+
+    const auto queue_work{[&](Common::UniqueFunction<void, Context*>&& work) {
+        if (strict_context_required) {
+            work(&strict_context.value());
         } else {
-            locker_variant = &*it;
+            workers->QueueWork(std::move(work));
         }
-        locker_variant->get()->programs.emplace(usage.variant, pair->second);
-    }
-}
-
-Shader CachedShader::CreateStageFromMemory(const ShaderParameters& params,
-                                           Maxwell::ShaderProgram program_type,
-                                           ProgramCode program_code, ProgramCode program_code_b) {
-    params.disk_cache.SaveRaw(ShaderDiskCacheRaw(
-        params.unique_identifier, GetProgramType(program_type), program_code, program_code_b));
-
-    ConstBufferLocker locker(GetEnginesShaderType(GetProgramType(program_type)));
-    const ShaderIR ir(program_code, STAGE_MAIN_OFFSET, COMPILER_SETTINGS, locker);
-    // TODO(Rodrigo): Handle VertexA shaders
-    // std::optional<ShaderIR> ir_b;
-    // if (!program_code_b.empty()) {
-    //     ir_b.emplace(program_code_b, STAGE_MAIN_OFFSET);
-    // }
-    return std::shared_ptr<CachedShader>(
-        new CachedShader(params, GetProgramType(program_type), GLShader::GetEntries(ir),
-                         std::move(program_code), std::move(program_code_b)));
-}
-
-Shader CachedShader::CreateKernelFromMemory(const ShaderParameters& params, ProgramCode code) {
-    params.disk_cache.SaveRaw(
-        ShaderDiskCacheRaw(params.unique_identifier, ProgramType::Compute, code));
-
-    ConstBufferLocker locker(Tegra::Engines::ShaderType::Compute);
-    const ShaderIR ir(code, KERNEL_MAIN_OFFSET, COMPILER_SETTINGS, locker);
-    return std::shared_ptr<CachedShader>(new CachedShader(
-        params, ProgramType::Compute, GLShader::GetEntries(ir), std::move(code), {}));
-}
-
-Shader CachedShader::CreateFromCache(const ShaderParameters& params,
-                                     const UnspecializedShader& unspecialized) {
-    return std::shared_ptr<CachedShader>(new CachedShader(params, unspecialized.program_type,
-                                                          unspecialized.entries, unspecialized.code,
-                                                          unspecialized.code_b));
-}
-
-std::tuple<GLuint, BaseBindings> CachedShader::GetProgramHandle(const ProgramVariant& variant) {
-    UpdateVariant();
-
-    const auto [entry, is_cache_miss] = curr_variant->programs.try_emplace(variant);
-    auto& program = entry->second;
-    if (is_cache_miss) {
-        program = BuildShader(device, unique_identifier, program_type, program_code, program_code_b,
-                              variant, *curr_variant->locker);
-        disk_cache.SaveUsage(GetUsage(variant, *curr_variant->locker));
-
-        LabelGLObject(GL_PROGRAM, program->handle, cpu_addr);
-    }
-
-    auto base_bindings = variant.base_bindings;
-    base_bindings.cbuf += static_cast<u32>(entries.const_buffers.size());
-    if (program_type != ProgramType::Compute) {
-        base_bindings.cbuf += STAGE_RESERVED_UBOS;
-    }
-    base_bindings.gmem += static_cast<u32>(entries.global_memory_entries.size());
-    base_bindings.sampler += static_cast<u32>(entries.samplers.size());
-
-    return {program->handle, base_bindings};
-}
-
-void CachedShader::UpdateVariant() {
-    if (curr_variant && !curr_variant->locker->IsConsistent()) {
-        curr_variant = nullptr;
-    }
-    if (!curr_variant) {
-        for (auto& variant : locker_variants) {
-            if (variant->locker->IsConsistent()) {
-                curr_variant = variant.get();
+    }};
+    const auto load_compute{[&](std::ifstream& file, FileEnvironment env) {
+        ComputePipelineKey key;
+        file.read(reinterpret_cast<char*>(&key), sizeof(key));
+        queue_work([this, key, env_ = std::move(env), &state, &callback](Context* ctx) mutable {
+            ctx->pools.ReleaseContents();
+            auto pipeline{CreateComputePipeline(ctx->pools, key, env_, true)};
+            std::scoped_lock lock{state.mutex};
+            if (pipeline) {
+                compute_cache.emplace(key, std::move(pipeline));
             }
-        }
-    }
-    if (!curr_variant) {
-        auto& new_variant = locker_variants.emplace_back();
-        new_variant = std::make_unique<LockerVariant>();
-        new_variant->locker = MakeLocker(system, program_type);
-        curr_variant = new_variant.get();
-    }
-}
+            ++state.built;
+            if (state.has_loaded) {
+                callback(VideoCore::LoadCallbackStage::Build, state.built, state.total);
+            }
+        });
+        ++state.total;
+    }};
+    const auto load_graphics{[&](std::ifstream& file, std::vector<FileEnvironment> envs) {
+        GraphicsPipelineKey key;
+        file.read(reinterpret_cast<char*>(&key), sizeof(key));
+        queue_work([this, key, envs_ = std::move(envs), &state, &callback](Context* ctx) mutable {
+            boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
+            for (auto& env : envs_) {
+                env_ptrs.push_back(&env);
+            }
+            ctx->pools.ReleaseContents();
+            auto pipeline{CreateGraphicsPipeline(ctx->pools, key, MakeSpan(env_ptrs), false, true)};
+            std::scoped_lock lock{state.mutex};
+            if (pipeline) {
+                graphics_cache.emplace(key, std::move(pipeline));
+            }
+            ++state.built;
+            if (state.has_loaded) {
+                callback(VideoCore::LoadCallbackStage::Build, state.built, state.total);
+            }
+        });
+        ++state.total;
+    }};
+    LoadPipelines(stop_loading, shader_cache_filename, CACHE_VERSION, load_compute, load_graphics);
 
-ShaderDiskCacheUsage CachedShader::GetUsage(const ProgramVariant& variant,
-                                            const ConstBufferLocker& locker) const {
-    ShaderDiskCacheUsage usage;
-    usage.unique_identifier = unique_identifier;
-    usage.variant = variant;
-    usage.keys = locker.GetKeys();
-    usage.bound_samplers = locker.GetBoundSamplers();
-    usage.bindless_samplers = locker.GetBindlessSamplers();
-    return usage;
-}
+    LOG_INFO(Render_OpenGL, "Total Pipeline Count: {}", state.total);
 
-ShaderCacheOpenGL::ShaderCacheOpenGL(RasterizerOpenGL& rasterizer, Core::System& system,
-                                     Core::Frontend::EmuWindow& emu_window, const Device& device)
-    : RasterizerCache{rasterizer}, system{system}, emu_window{emu_window}, device{device},
-      disk_cache{system} {}
+    std::unique_lock lock{state.mutex};
+    callback(VideoCore::LoadCallbackStage::Build, 0, state.total);
+    state.has_loaded = true;
+    lock.unlock();
 
-void ShaderCacheOpenGL::LoadDiskCache(const std::atomic_bool& stop_loading,
-                                      const VideoCore::DiskResourceLoadCallback& callback) {
-    const auto transferable = disk_cache.LoadTransferable();
-    if (!transferable) {
+    if (strict_context_required) {
         return;
     }
-    const auto [raws, shader_usages] = *transferable;
-    if (!GenerateUnspecializedShaders(stop_loading, callback, raws) || stop_loading) {
-        return;
+    workers->WaitForRequests(stop_loading);
+    if (!use_asynchronous_shaders) {
+        workers.reset();
     }
+}
 
-    const auto dumps = disk_cache.LoadPrecompiled();
-    const auto supported_formats = GetSupportedFormats();
-
-    // Track if precompiled cache was altered during loading to know if we have to
-    // serialize the virtual precompiled cache file back to the hard drive
-    bool precompiled_cache_altered = false;
-
-    // Inform the frontend about shader build initialization
-    if (callback) {
-        callback(VideoCore::LoadCallbackStage::Build, 0, shader_usages.size());
+GraphicsPipeline* ShaderCache::CurrentGraphicsPipeline() {
+    if (!RefreshStages(graphics_key.unique_hashes)) {
+        current_pipeline = nullptr;
+        return nullptr;
     }
+    const auto& regs{maxwell3d->regs};
+    graphics_key.raw = 0;
+    graphics_key.early_z.Assign(regs.mandated_early_z != 0 ? 1 : 0);
+    graphics_key.gs_input_topology.Assign(maxwell3d->draw_manager->GetDrawState().topology);
+    graphics_key.tessellation_primitive.Assign(regs.tessellation.params.domain_type.Value());
+    graphics_key.tessellation_spacing.Assign(regs.tessellation.params.spacing.Value());
+    graphics_key.tessellation_clockwise.Assign(
+        regs.tessellation.params.output_primitives.Value() ==
+        Maxwell::Tessellation::OutputPrimitives::Triangles_CW);
+    graphics_key.xfb_enabled.Assign(regs.transform_feedback_enabled != 0 ? 1 : 0);
+    graphics_key.app_stage.Assign(maxwell3d->engine_state);
+    if (graphics_key.xfb_enabled) {
+        SetXfbState(graphics_key.xfb_state, regs);
+    }
+    if (current_pipeline && graphics_key == current_pipeline->Key()) {
+        return BuiltPipeline(current_pipeline);
+    }
+    return CurrentGraphicsPipelineSlowPath();
+}
 
-    std::mutex mutex;
-    std::size_t built_shaders = 0; // It doesn't have be atomic since it's used behind a mutex
-    std::atomic_bool compilation_failed = false;
+GraphicsPipeline* ShaderCache::CurrentGraphicsPipelineSlowPath() {
+    const auto [pair, is_new]{graphics_cache.try_emplace(graphics_key)};
+    auto& pipeline{pair->second};
+    if (is_new) {
+        pipeline = CreateGraphicsPipeline();
+    }
+    if (!pipeline) {
+        return nullptr;
+    }
+    current_pipeline = pipeline.get();
+    return BuiltPipeline(current_pipeline);
+}
 
-    const auto Worker = [&](Core::Frontend::GraphicsContext* context, std::size_t begin,
-                            std::size_t end, const std::vector<ShaderDiskCacheUsage>& shader_usages,
-                            const ShaderDumpsMap& dumps) {
-        context->MakeCurrent();
-        SCOPE_EXIT({ return context->DoneCurrent(); });
+GraphicsPipeline* ShaderCache::BuiltPipeline(GraphicsPipeline* pipeline) const noexcept {
+    if (pipeline->IsBuilt()) {
+        return pipeline;
+    }
+    if (!use_asynchronous_shaders) {
+        return pipeline;
+    }
+    // If something is using depth, we can assume that games are not rendering anything which
+    // will be used one time.
+    if (maxwell3d->regs.zeta_enable) {
+        return nullptr;
+    }
+    // If games are using a small index count, we can assume these are full screen quads.
+    // Usually these shaders are only used once for building textures so we can assume they
+    // can't be built async
+    const auto& draw_state = maxwell3d->draw_manager->GetDrawState();
+    if (draw_state.index_buffer.count <= 6 || draw_state.vertex_buffer.count <= 6) {
+        return pipeline;
+    }
+    return nullptr;
+}
 
-        for (std::size_t i = begin; i < end; ++i) {
-            if (stop_loading || compilation_failed) {
-                return;
-            }
-            const auto& usage{shader_usages[i]};
-            const auto& unspecialized{unspecialized_shaders.at(usage.unique_identifier)};
-            const auto dump{dumps.find(usage)};
-
-            CachedProgram shader;
-            if (dump != dumps.end()) {
-                // If the shader is dumped, attempt to load it with
-                shader = GeneratePrecompiledProgram(dump->second, supported_formats);
-                if (!shader) {
-                    compilation_failed = true;
-                    return;
-                }
-            }
-            if (!shader) {
-                auto locker{MakeLocker(system, unspecialized.program_type)};
-                FillLocker(*locker, usage);
-                shader = BuildShader(device, usage.unique_identifier, unspecialized.program_type,
-                                     unspecialized.code, unspecialized.code_b, usage.variant,
-                                     *locker, true);
-            }
-
-            std::scoped_lock lock{mutex};
-            if (callback) {
-                callback(VideoCore::LoadCallbackStage::Build, ++built_shaders,
-                         shader_usages.size());
-            }
-
-            precompiled_programs.emplace(usage, std::move(shader));
-
-            // TODO(Rodrigo): Is there a better way to do this?
-            precompiled_variants[usage.unique_identifier].push_back(
-                precompiled_programs.find(usage));
-        }
+ComputePipeline* ShaderCache::CurrentComputePipeline() {
+    const VideoCommon::ShaderInfo* const shader{ComputeShader()};
+    if (!shader) {
+        return nullptr;
+    }
+    const auto& qmd{kepler_compute->launch_description};
+    const ComputePipelineKey key{
+        .unique_hash = shader->unique_hash,
+        .shared_memory_size = qmd.shared_alloc,
+        .workgroup_size{qmd.block_dim_x, qmd.block_dim_y, qmd.block_dim_z},
     };
-
-    const auto num_workers{static_cast<std::size_t>(std::thread::hardware_concurrency() + 1ULL)};
-    const std::size_t bucket_size{shader_usages.size() / num_workers};
-    std::vector<std::unique_ptr<Core::Frontend::GraphicsContext>> contexts(num_workers);
-    std::vector<std::thread> threads(num_workers);
-    for (std::size_t i = 0; i < num_workers; ++i) {
-        const bool is_last_worker = i + 1 == num_workers;
-        const std::size_t start{bucket_size * i};
-        const std::size_t end{is_last_worker ? shader_usages.size() : start + bucket_size};
-
-        // On some platforms the shared context has to be created from the GUI thread
-        contexts[i] = emu_window.CreateSharedContext();
-        threads[i] = std::thread(Worker, contexts[i].get(), start, end, shader_usages, dumps);
+    const auto [pair, is_new]{compute_cache.try_emplace(key)};
+    auto& pipeline{pair->second};
+    if (!is_new) {
+        return pipeline.get();
     }
-    for (auto& thread : threads) {
-        thread.join();
-    }
+    pipeline = CreateComputePipeline(key, shader);
+    return pipeline.get();
+}
 
-    if (compilation_failed) {
-        // Invalidate the precompiled cache if a shader dumped shader was rejected
-        disk_cache.InvalidatePrecompiled();
-        precompiled_cache_altered = true;
-        return;
-    }
-    if (stop_loading) {
-        return;
-    }
+std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline() {
+    GraphicsEnvironments environments;
+    GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
 
-    // TODO(Rodrigo): Do state tracking for transferable shaders and do a dummy draw
-    // before precompiling them
-
-    for (std::size_t i = 0; i < shader_usages.size(); ++i) {
-        const auto& usage{shader_usages[i]};
-        if (dumps.find(usage) == dumps.end()) {
-            const auto& program{precompiled_programs.at(usage)};
-            disk_cache.SaveDump(usage, program->handle);
-            precompiled_cache_altered = true;
+    main_pools.ReleaseContents();
+    auto pipeline{CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(),
+                                         use_asynchronous_shaders)};
+    if (!pipeline || shader_cache_filename.empty()) {
+        return pipeline;
+    }
+    boost::container::static_vector<const GenericEnvironment*, Maxwell::MaxShaderProgram> env_ptrs;
+    for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+        if (graphics_key.unique_hashes[index] != 0) {
+            env_ptrs.push_back(&environments.envs[index]);
         }
     }
-
-    if (precompiled_cache_altered) {
-        disk_cache.SaveVirtualPrecompiledFile();
-    }
+    SerializePipeline(graphics_key, env_ptrs, shader_cache_filename, CACHE_VERSION);
+    return pipeline;
 }
 
-const PrecompiledVariants* ShaderCacheOpenGL::GetPrecompiledVariants(u64 unique_identifier) const {
-    const auto it = precompiled_variants.find(unique_identifier);
-    return it == precompiled_variants.end() ? nullptr : &it->second;
-}
+std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
+    ShaderContext::ShaderPools& pools, const GraphicsPipelineKey& key,
+    std::span<Shader::Environment* const> envs, bool use_shader_workers,
+    bool force_context_flush) try {
+    auto hash = key.Hash();
+    LOG_INFO(Render_OpenGL, "0x{:016x}", hash);
+    size_t env_index{};
+    u32 total_storage_buffers{};
+    std::array<Shader::IR::Program, Maxwell::MaxShaderProgram> programs;
+    const bool uses_vertex_a{key.unique_hashes[0] != 0};
+    const bool uses_vertex_b{key.unique_hashes[1] != 0};
 
-CachedProgram ShaderCacheOpenGL::GeneratePrecompiledProgram(
-    const ShaderDiskCacheDump& dump, const std::unordered_set<GLenum>& supported_formats) {
-    if (supported_formats.find(dump.binary_format) == supported_formats.end()) {
-        LOG_INFO(Render_OpenGL, "Precompiled cache entry with unsupported format - removing");
-        return {};
-    }
+    // Layer passthrough generation for devices without GL_ARB_shader_viewport_layer_array
+    Shader::IR::Program* layer_source_program{};
 
-    CachedProgram shader = std::make_shared<OGLProgram>();
-    shader->handle = glCreateProgram();
-    glProgramParameteri(shader->handle, GL_PROGRAM_SEPARABLE, GL_TRUE);
-    glProgramBinary(shader->handle, dump.binary_format, dump.binary.data(),
-                    static_cast<GLsizei>(dump.binary.size()));
-
-    GLint link_status{};
-    glGetProgramiv(shader->handle, GL_LINK_STATUS, &link_status);
-    if (link_status == GL_FALSE) {
-        LOG_INFO(Render_OpenGL, "Precompiled cache rejected by the driver - removing");
-        return {};
-    }
-
-    return shader;
-}
-
-bool ShaderCacheOpenGL::GenerateUnspecializedShaders(
-    const std::atomic_bool& stop_loading, const VideoCore::DiskResourceLoadCallback& callback,
-    const std::vector<ShaderDiskCacheRaw>& raws) {
-    if (callback) {
-        callback(VideoCore::LoadCallbackStage::Decompile, 0, raws.size());
-    }
-
-    for (std::size_t i = 0; i < raws.size(); ++i) {
-        if (stop_loading) {
-            return false;
+    for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+        const bool is_emulated_stage = layer_source_program != nullptr &&
+                                       index == static_cast<u32>(Maxwell::ShaderType::Geometry);
+        if (key.unique_hashes[index] == 0 && is_emulated_stage) {
+            auto topology = MaxwellToOutputTopology(key.gs_input_topology);
+            programs[index] = GenerateGeometryPassthrough(pools.inst, pools.block, host_info,
+                                                          *layer_source_program, topology);
+            continue;
         }
-        const auto& raw{raws[i]};
-        const u64 unique_identifier{raw.GetUniqueIdentifier()};
-        const u64 calculated_hash{
-            GetUniqueIdentifier(raw.GetProgramType(), raw.GetProgramCode(), raw.GetProgramCodeB())};
-        if (unique_identifier != calculated_hash) {
-            LOG_ERROR(Render_OpenGL,
-                      "Invalid hash in entry={:016x} (obtained hash={:016x}) - "
-                      "removing shader cache",
-                      raw.GetUniqueIdentifier(), calculated_hash);
-            disk_cache.InvalidateTransferable();
-            return false;
+        if (key.unique_hashes[index] == 0) {
+            continue;
+        }
+        Shader::Environment& env{*envs[env_index]};
+        ++env_index;
+
+        const u32 cfg_offset{static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader))};
+        Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
+
+        if (Settings::values.dump_shaders) {
+            env.Dump(hash, key.unique_hashes[index]);
         }
 
-        const u32 main_offset =
-            raw.GetProgramType() == ProgramType::Compute ? KERNEL_MAIN_OFFSET : STAGE_MAIN_OFFSET;
-        ConstBufferLocker locker(GetEnginesShaderType(raw.GetProgramType()));
-        const ShaderIR ir(raw.GetProgramCode(), main_offset, COMPILER_SETTINGS, locker);
-        // TODO(Rodrigo): Handle VertexA shaders
-        // std::optional<ShaderIR> ir_b;
-        // if (raw.HasProgramA()) {
-        //     ir_b.emplace(raw.GetProgramCodeB(), main_offset);
-        // }
+        if (!uses_vertex_a || index != 1) {
+            // Normal path
+            programs[index] = TranslateProgram(pools.inst, pools.block, env, cfg, host_info);
 
-        UnspecializedShader unspecialized;
-        unspecialized.entries = GLShader::GetEntries(ir);
-        unspecialized.program_type = raw.GetProgramType();
-        unspecialized.code = raw.GetProgramCode();
-        unspecialized.code_b = raw.GetProgramCodeB();
-        unspecialized_shaders.emplace(raw.GetUniqueIdentifier(), unspecialized);
+            total_storage_buffers +=
+                Shader::NumDescriptors(programs[index].info.storage_buffers_descriptors);
+        } else {
+            // VertexB path when VertexA is present.
+            auto& program_va{programs[0]};
+            auto program_vb{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
+            total_storage_buffers +=
+                Shader::NumDescriptors(program_vb.info.storage_buffers_descriptors);
+            programs[index] = MergeDualVertexPrograms(program_va, program_vb, env);
+        }
 
-        if (callback) {
-            callback(VideoCore::LoadCallbackStage::Decompile, i, raws.size());
+        if (programs[index].info.requires_layer_emulation) {
+            layer_source_program = &programs[index];
         }
     }
-    return true;
+    const u32 glasm_storage_buffer_limit{device.GetMaxGLASMStorageBufferBlocks()};
+    const bool glasm_use_storage_buffers{total_storage_buffers <= glasm_storage_buffer_limit};
+
+    std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};
+
+    std::array<std::string, 5> sources;
+    std::array<std::vector<u32>, 5> sources_spirv;
+    Shader::Backend::Bindings binding;
+    Shader::IR::Program* previous_program{};
+    const bool use_glasm{device.UseAssemblyShaders()};
+    const size_t first_index = uses_vertex_a && uses_vertex_b ? 1 : 0;
+    for (size_t index = first_index; index < Maxwell::MaxShaderProgram; ++index) {
+        const bool is_emulated_stage = layer_source_program != nullptr &&
+                                       index == static_cast<u32>(Maxwell::ShaderType::Geometry);
+        if (key.unique_hashes[index] == 0 && !is_emulated_stage) {
+            continue;
+        }
+        UNIMPLEMENTED_IF(index == 0);
+
+        Shader::IR::Program& program{programs[index]};
+        const size_t stage_index{index - 1};
+        infos[stage_index] = &program.info;
+
+        const auto runtime_info{
+            MakeRuntimeInfo(key, program, previous_program, glasm_use_storage_buffers, use_glasm)};
+        switch (device.GetShaderBackend()) {
+        case Settings::ShaderBackend::Glsl:
+            ConvertLegacyToGeneric(program, runtime_info);
+            sources[stage_index] = EmitGLSL(profile, runtime_info, program, binding);
+            break;
+        case Settings::ShaderBackend::Glasm:
+            sources[stage_index] = EmitGLASM(profile, runtime_info, program, binding);
+            break;
+        case Settings::ShaderBackend::SpirV:
+            ConvertLegacyToGeneric(program, runtime_info);
+            sources_spirv[stage_index] = EmitSPIRV(profile, runtime_info, program, binding);
+            break;
+        }
+        previous_program = &program;
+    }
+    auto* const thread_worker{use_shader_workers ? workers.get() : nullptr};
+    return std::make_unique<GraphicsPipeline>(device, texture_cache, buffer_cache, program_manager,
+                                              state_tracker, thread_worker, &shader_notify, sources,
+                                              sources_spirv, infos, key, force_context_flush);
+
+} catch (Shader::Exception& exception) {
+    LOG_ERROR(Render_OpenGL, "{}", exception.what());
+    return nullptr;
 }
 
-Shader ShaderCacheOpenGL::GetStageProgram(Maxwell::ShaderProgram program) {
-    if (!system.GPU().Maxwell3D().dirty.shaders) {
-        return last_shaders[static_cast<std::size_t>(program)];
+std::unique_ptr<ComputePipeline> ShaderCache::CreateComputePipeline(
+    const ComputePipelineKey& key, const VideoCommon::ShaderInfo* shader) {
+    const GPUVAddr program_base{kepler_compute->regs.code_loc.Address()};
+    const auto& qmd{kepler_compute->launch_description};
+    ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
+    env.SetCachedSize(shader->size_bytes);
+
+    main_pools.ReleaseContents();
+    auto pipeline{CreateComputePipeline(main_pools, key, env)};
+    if (!pipeline || shader_cache_filename.empty()) {
+        return pipeline;
     }
-
-    auto& memory_manager{system.GPU().MemoryManager()};
-    const GPUVAddr address{GetShaderAddress(system, program)};
-
-    // Look up shader in the cache based on address
-    const auto host_ptr{memory_manager.GetPointer(address)};
-    Shader shader{TryGet(host_ptr)};
-    if (shader) {
-        return last_shaders[static_cast<std::size_t>(program)] = shader;
-    }
-
-    // No shader found - create a new one
-    ProgramCode code{GetShaderCode(memory_manager, address, host_ptr)};
-    ProgramCode code_b;
-    if (program == Maxwell::ShaderProgram::VertexA) {
-        const GPUVAddr address_b{GetShaderAddress(system, Maxwell::ShaderProgram::VertexB)};
-        code_b = GetShaderCode(memory_manager, address_b, memory_manager.GetPointer(address_b));
-    }
-
-    const auto unique_identifier = GetUniqueIdentifier(GetProgramType(program), code, code_b);
-    const auto precompiled_variants = GetPrecompiledVariants(unique_identifier);
-    const auto cpu_addr{*memory_manager.GpuToCpuAddress(address)};
-    const ShaderParameters params{system,   disk_cache, precompiled_variants, device,
-                                  cpu_addr, host_ptr,   unique_identifier};
-
-    const auto found = unspecialized_shaders.find(unique_identifier);
-    if (found == unspecialized_shaders.end()) {
-        shader = CachedShader::CreateStageFromMemory(params, program, std::move(code),
-                                                     std::move(code_b));
-    } else {
-        shader = CachedShader::CreateFromCache(params, found->second);
-    }
-    Register(shader);
-
-    return last_shaders[static_cast<std::size_t>(program)] = shader;
+    SerializePipeline(key, std::array<const GenericEnvironment*, 1>{&env}, shader_cache_filename,
+                      CACHE_VERSION);
+    return pipeline;
 }
 
-Shader ShaderCacheOpenGL::GetComputeKernel(GPUVAddr code_addr) {
-    auto& memory_manager{system.GPU().MemoryManager()};
-    const auto host_ptr{memory_manager.GetPointer(code_addr)};
-    auto kernel = TryGet(host_ptr);
-    if (kernel) {
-        return kernel;
+std::unique_ptr<ComputePipeline> ShaderCache::CreateComputePipeline(
+    ShaderContext::ShaderPools& pools, const ComputePipelineKey& key, Shader::Environment& env,
+    bool force_context_flush) try {
+    auto hash = key.Hash();
+    LOG_INFO(Render_OpenGL, "0x{:016x}", hash);
+
+    Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
+
+    if (Settings::values.dump_shaders) {
+        env.Dump(hash, key.unique_hash);
     }
 
-    // No kernel found - create a new one
-    auto code{GetShaderCode(memory_manager, code_addr, host_ptr)};
-    const auto unique_identifier{GetUniqueIdentifier(ProgramType::Compute, code, {})};
-    const auto precompiled_variants = GetPrecompiledVariants(unique_identifier);
-    const auto cpu_addr{*memory_manager.GpuToCpuAddress(code_addr)};
-    const ShaderParameters params{system,   disk_cache, precompiled_variants, device,
-                                  cpu_addr, host_ptr,   unique_identifier};
+    auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
+    const u32 num_storage_buffers{Shader::NumDescriptors(program.info.storage_buffers_descriptors)};
+    Shader::RuntimeInfo info;
+    info.glasm_use_storage_buffers = num_storage_buffers <= device.GetMaxGLASMStorageBufferBlocks();
 
-    const auto found = unspecialized_shaders.find(unique_identifier);
-    if (found == unspecialized_shaders.end()) {
-        kernel = CachedShader::CreateKernelFromMemory(params, std::move(code));
-    } else {
-        kernel = CachedShader::CreateFromCache(params, found->second);
+    std::string code{};
+    std::vector<u32> code_spirv;
+    switch (device.GetShaderBackend()) {
+    case Settings::ShaderBackend::Glsl:
+        code = EmitGLSL(profile, program);
+        break;
+    case Settings::ShaderBackend::Glasm:
+        code = EmitGLASM(profile, info, program);
+        break;
+    case Settings::ShaderBackend::SpirV:
+        code_spirv = EmitSPIRV(profile, program);
+        break;
     }
 
-    Register(kernel);
-    return kernel;
+    return std::make_unique<ComputePipeline>(device, texture_cache, buffer_cache, program_manager,
+                                             program.info, code, code_spirv, force_context_flush);
+} catch (Shader::Exception& exception) {
+    LOG_ERROR(Render_OpenGL, "{}", exception.what());
+    return nullptr;
+}
+
+std::unique_ptr<ShaderWorker> ShaderCache::CreateWorkers() const {
+    return std::make_unique<ShaderWorker>(std::max(std::thread::hardware_concurrency(), 2U) - 1,
+                                          "GlShaderBuilder",
+                                          [this] { return Context{emu_window}; });
 }
 
 } // namespace OpenGL

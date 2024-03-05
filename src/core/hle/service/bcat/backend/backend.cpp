@@ -1,32 +1,30 @@
-// Copyright 2019 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/hex_util.h"
 #include "common/logging/log.h"
 #include "core/core.h"
-#include "core/hle/lock.h"
+#include "core/hle/kernel/k_event.h"
 #include "core/hle/service/bcat/backend/backend.h"
 
 namespace Service::BCAT {
 
-ProgressServiceBackend::ProgressServiceBackend(Kernel::KernelCore& kernel,
-                                               std::string_view event_name) {
-    event = Kernel::WritableEvent::CreateEventPair(
-        kernel, Kernel::ResetType::Automatic,
-        std::string("ProgressServiceBackend:UpdateEvent:").append(event_name));
+ProgressServiceBackend::ProgressServiceBackend(Core::System& system, std::string_view event_name)
+    : service_context{system, "ProgressServiceBackend"} {
+    update_event = service_context.CreateEvent("ProgressServiceBackend:UpdateEvent:" +
+                                               std::string(event_name));
 }
 
-Kernel::SharedPtr<Kernel::ReadableEvent> ProgressServiceBackend::GetEvent() const {
-    return event.readable;
+ProgressServiceBackend::~ProgressServiceBackend() {
+    service_context.CloseEvent(update_event);
+}
+
+Kernel::KReadableEvent& ProgressServiceBackend::GetEvent() {
+    return update_event->GetReadableEvent();
 }
 
 DeliveryCacheProgressImpl& ProgressServiceBackend::GetImpl() {
     return impl;
-}
-
-void ProgressServiceBackend::SetNeedHLELock(bool need) {
-    need_hle_lock = need;
 }
 
 void ProgressServiceBackend::SetTotalSize(u64 size) {
@@ -35,18 +33,18 @@ void ProgressServiceBackend::SetTotalSize(u64 size) {
 }
 
 void ProgressServiceBackend::StartConnecting() {
-    impl.status = DeliveryCacheProgressImpl::Status::Connecting;
+    impl.status = DeliveryCacheProgressStatus::Connecting;
     SignalUpdate();
 }
 
 void ProgressServiceBackend::StartProcessingDataList() {
-    impl.status = DeliveryCacheProgressImpl::Status::ProcessingDataList;
+    impl.status = DeliveryCacheProgressStatus::ProcessingDataList;
     SignalUpdate();
 }
 
 void ProgressServiceBackend::StartDownloadingFile(std::string_view dir_name,
                                                   std::string_view file_name, u64 file_size) {
-    impl.status = DeliveryCacheProgressImpl::Status::Downloading;
+    impl.status = DeliveryCacheProgressStatus::Downloading;
     impl.current_downloaded_bytes = 0;
     impl.current_total_bytes = file_size;
     std::memcpy(impl.current_directory.data(), dir_name.data(),
@@ -67,7 +65,7 @@ void ProgressServiceBackend::FinishDownloadingFile() {
 }
 
 void ProgressServiceBackend::CommitDirectory(std::string_view dir_name) {
-    impl.status = DeliveryCacheProgressImpl::Status::Committing;
+    impl.status = DeliveryCacheProgressStatus::Committing;
     impl.current_file.fill(0);
     impl.current_downloaded_bytes = 0;
     impl.current_total_bytes = 0;
@@ -76,59 +74,54 @@ void ProgressServiceBackend::CommitDirectory(std::string_view dir_name) {
     SignalUpdate();
 }
 
-void ProgressServiceBackend::FinishDownload(ResultCode result) {
+void ProgressServiceBackend::FinishDownload(Result result) {
     impl.total_downloaded_bytes = impl.total_bytes;
-    impl.status = DeliveryCacheProgressImpl::Status::Done;
+    impl.status = DeliveryCacheProgressStatus::Done;
     impl.result = result;
     SignalUpdate();
 }
 
-void ProgressServiceBackend::SignalUpdate() const {
-    if (need_hle_lock) {
-        std::lock_guard<std::recursive_mutex> lock(HLE::g_hle_lock);
-        event.writable->Signal();
-    } else {
-        event.writable->Signal();
-    }
+void ProgressServiceBackend::SignalUpdate() {
+    update_event->Signal();
 }
 
-Backend::Backend(DirectoryGetter getter) : dir_getter(std::move(getter)) {}
+BcatBackend::BcatBackend(DirectoryGetter getter) : dir_getter(std::move(getter)) {}
 
-Backend::~Backend() = default;
+BcatBackend::~BcatBackend() = default;
 
-NullBackend::NullBackend(DirectoryGetter getter) : Backend(std::move(getter)) {}
+NullBcatBackend::NullBcatBackend(DirectoryGetter getter) : BcatBackend(std::move(getter)) {}
 
-NullBackend::~NullBackend() = default;
+NullBcatBackend::~NullBcatBackend() = default;
 
-bool NullBackend::Synchronize(TitleIDVersion title, ProgressServiceBackend& progress) {
+bool NullBcatBackend::Synchronize(TitleIDVersion title, ProgressServiceBackend& progress) {
     LOG_DEBUG(Service_BCAT, "called, title_id={:016X}, build_id={:016X}", title.title_id,
               title.build_id);
 
-    progress.FinishDownload(RESULT_SUCCESS);
+    progress.FinishDownload(ResultSuccess);
     return true;
 }
 
-bool NullBackend::SynchronizeDirectory(TitleIDVersion title, std::string name,
-                                       ProgressServiceBackend& progress) {
+bool NullBcatBackend::SynchronizeDirectory(TitleIDVersion title, std::string name,
+                                           ProgressServiceBackend& progress) {
     LOG_DEBUG(Service_BCAT, "called, title_id={:016X}, build_id={:016X}, name={}", title.title_id,
               title.build_id, name);
 
-    progress.FinishDownload(RESULT_SUCCESS);
+    progress.FinishDownload(ResultSuccess);
     return true;
 }
 
-bool NullBackend::Clear(u64 title_id) {
-    LOG_DEBUG(Service_BCAT, "called, title_id={:016X}");
+bool NullBcatBackend::Clear(u64 title_id) {
+    LOG_DEBUG(Service_BCAT, "called, title_id={:016X}", title_id);
 
     return true;
 }
 
-void NullBackend::SetPassphrase(u64 title_id, const Passphrase& passphrase) {
-    LOG_DEBUG(Service_BCAT, "called, title_id={:016X}, passphrase = {}", title_id,
+void NullBcatBackend::SetPassphrase(u64 title_id, const Passphrase& passphrase) {
+    LOG_DEBUG(Service_BCAT, "called, title_id={:016X}, passphrase={}", title_id,
               Common::HexToString(passphrase));
 }
 
-std::optional<std::vector<u8>> NullBackend::GetLaunchParameter(TitleIDVersion title) {
+std::optional<std::vector<u8>> NullBcatBackend::GetLaunchParameter(TitleIDVersion title) {
     LOG_DEBUG(Service_BCAT, "called, title_id={:016X}, build_id={:016X}", title.title_id,
               title.build_id);
     return std::nullopt;

@@ -1,16 +1,11 @@
-// Copyright 2019 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
 #include <optional>
-#include <string>
 #include "common/common_types.h"
-
-namespace Service::Set {
-enum class LanguageCode : u64;
-}
+#include "core/hle/service/set/system_settings_server.h"
 
 namespace Service::NS {
 /// This is nn::ns::detail::ApplicationLanguage
@@ -30,6 +25,7 @@ enum class ApplicationLanguage : u8 {
     Korean,
     TraditionalChinese,
     SimplifiedChinese,
+    BrazilianPortuguese,
     Count
 };
 using ApplicationLanguagePriorityList =

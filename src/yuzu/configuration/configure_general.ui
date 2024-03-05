@@ -6,12 +6,15 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>300</width>
-    <height>407</height>
+    <width>744</width>
+    <height>568</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>Form</string>
+  </property>
+  <property name="accessibleName">
+   <string>General</string>
   </property>
   <layout class="QHBoxLayout" name="HorizontalLayout">
    <item>
@@ -23,83 +26,49 @@
        </property>
        <layout class="QHBoxLayout" name="GeneralHorizontalLayout">
         <item>
-         <layout class="QVBoxLayout" name="GeneralVerticalLayout">
-          <item>
-           <layout class="QHBoxLayout" name="horizontalLayout_2">
-            <item>
-             <widget class="QCheckBox" name="toggle_frame_limit">
-              <property name="text">
-               <string>Limit Speed Percent</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QSpinBox" name="frame_limit">
-              <property name="suffix">
-               <string>%</string>
-              </property>
-              <property name="minimum">
-               <number>1</number>
-              </property>
-              <property name="maximum">
-               <number>9999</number>
-              </property>
-              <property name="value">
-               <number>100</number>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-          <item>
-           <widget class="QCheckBox" name="toggle_check_exit">
-            <property name="text">
-             <string>Confirm exit while emulation is running</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QCheckBox" name="toggle_user_on_boot">
-            <property name="text">
-             <string>Prompt for user on game boot</string>
-            </property>
-           </widget>
-          </item>
-           <item>
-             <widget class="QCheckBox" name="toggle_background_pause">
-               <property name="text">
-                 <string>Pause emulation when in background</string>
-               </property>
-             </widget>
-           </item>
-         </layout>
+         <widget class="QWidget" name="general_widget" native="true">
+          <layout class="QVBoxLayout" name="GeneralVerticalLayout">
+           <property name="leftMargin">
+            <number>0</number>
+           </property>
+           <property name="topMargin">
+            <number>0</number>
+           </property>
+           <property name="rightMargin">
+            <number>0</number>
+           </property>
+           <property name="bottomMargin">
+            <number>0</number>
+           </property>
+          </layout>
+         </widget>
         </item>
        </layout>
       </widget>
      </item>
      <item>
-      <widget class="QGroupBox" name="theme_group_box">
+      <widget class="QGroupBox" name="LinuxGroupBox">
        <property name="title">
-        <string>Theme</string>
+        <string>Linux</string>
        </property>
-       <layout class="QHBoxLayout" name="theme_qhbox_layout">
+       <layout class="QVBoxLayout" name="LinuxVerticalLayout_1">
         <item>
-         <layout class="QVBoxLayout" name="theme_qvbox_layout">
-          <item>
-           <layout class="QHBoxLayout" name="theme_qhbox_layout_2">
-            <item>
-             <widget class="QLabel" name="theme_label">
-              <property name="text">
-               <string>Theme:</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QComboBox" name="theme_combobox"/>
-            </item>
-           </layout>
-          </item>
-         </layout>
+         <widget class="QWidget" name="linux_widget" native="true">
+          <layout class="QVBoxLayout" name="LinuxVerticalLayout_2">
+           <property name="leftMargin">
+            <number>0</number>
+           </property>
+           <property name="topMargin">
+            <number>0</number>
+           </property>
+           <property name="rightMargin">
+            <number>0</number>
+           </property>
+           <property name="bottomMargin">
+            <number>0</number>
+           </property>
+          </layout>
+         </widget>
         </item>
        </layout>
       </widget>
@@ -116,6 +85,45 @@
         </size>
        </property>
       </spacer>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="layout_reset">
+       <property name="spacing">
+        <number>6</number>
+       </property>
+       <property name="leftMargin">
+        <number>5</number>
+       </property>
+       <property name="topMargin">
+        <number>5</number>
+       </property>
+       <property name="rightMargin">
+        <number>5</number>
+       </property>
+       <property name="bottomMargin">
+        <number>5</number>
+       </property>
+       <item>
+        <widget class="QPushButton" name="button_reset_defaults">
+         <property name="text">
+          <string>Reset All Settings</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="spacer_reset">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>40</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
      </item>
     </layout>
    </item>

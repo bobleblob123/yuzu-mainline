@@ -1,6 +1,5 @@
-// Copyright 2018 yuzu emulator team
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
@@ -12,8 +11,16 @@
 #include "core/file_sys/patch_manager.h"
 #include "core/loader/loader.h"
 
+namespace Core {
+class System;
+}
+
+namespace Core::NCE {
+class Patcher;
+}
+
 namespace Kernel {
-class Process;
+class KProcess;
 }
 
 namespace Loader {
@@ -55,7 +62,7 @@ struct NSOHeader {
 static_assert(sizeof(NSOHeader) == 0x100, "NSOHeader has incorrect size.");
 static_assert(std::is_trivially_copyable_v<NSOHeader>, "NSOHeader must be trivially copyable.");
 
-constexpr u64 NSO_ARGUMENT_DATA_ALLOCATION_SIZE = 0x9000;
+constexpr u32 NSO_ARGUMENT_DATA_ALLOCATION_SIZE = 0x9000;
 
 struct NSOArgumentHeader {
     u32_le allocated_size;
@@ -67,26 +74,31 @@ static_assert(sizeof(NSOArgumentHeader) == 0x20, "NSOArgumentHeader has incorrec
 /// Loads an NSO file
 class AppLoader_NSO final : public AppLoader {
 public:
-    explicit AppLoader_NSO(FileSys::VirtualFile file);
+    explicit AppLoader_NSO(FileSys::VirtualFile file_);
 
     /**
-     * Returns the type of the file
-     * @param file std::shared_ptr<VfsFile> open file
-     * @return FileType found, or FileType::Error if this loader doesn't know it
+     * Identifies whether or not the given file is a form of NSO file.
+     *
+     * @param in_file The file to be identified.
+     *
+     * @return FileType::NSO if found, or FileType::Error if some other type of file.
      */
-    static FileType IdentifyType(const FileSys::VirtualFile& file);
+    static FileType IdentifyType(const FileSys::VirtualFile& in_file);
 
     FileType GetFileType() const override {
         return IdentifyType(file);
     }
 
-    static std::optional<VAddr> LoadModule(Kernel::Process& process, const FileSys::VfsFile& file,
-                                           VAddr load_base, bool should_pass_arguments,
-                                           std::optional<FileSys::PatchManager> pm = {});
+    static std::optional<VAddr> LoadModule(Kernel::KProcess& process, Core::System& system,
+                                           const FileSys::VfsFile& nso_file, VAddr load_base,
+                                           bool should_pass_arguments, bool load_into_process,
+                                           std::optional<FileSys::PatchManager> pm = {},
+                                           std::vector<Core::NCE::Patcher>* patches = nullptr,
+                                           s32 patch_index = -1);
 
-    LoadResult Load(Kernel::Process& process) override;
+    LoadResult Load(Kernel::KProcess& process, Core::System& system) override;
 
-    ResultStatus ReadNSOModules(Modules& modules) override;
+    ResultStatus ReadNSOModules(Modules& out_modules) override;
 
 private:
     Modules modules;
